@@ -79,7 +79,7 @@ Dandelion은 또한 Mwc Transaction을 Stem phase에서 통합(Aggregated) 한 �
 기본적으로 노드가 네트워크에서 transaction을 전송하면 Dandelion 프로토콜을 사용하여 Dandelion 중계기(relay)에 stem transaction으로 전파됩니다. Dandelion 중계기(relay)는 더 많은 stem transaction를 통합하기 위해 일정 기간 (patience 타이머) 대기합니다. 타이머가 끝날때 중계기(relay)는 새로운 stem transaction마다 코인 플립을 해서 stem을 하거나 (다음 Dandelion relay로 보내거나) fluff(정상적으로 전파하거나) 할지를 결정합니다. 그런 다음 relay는 모든 transaction을 stem으로 가져 와서 통합하여 다음 Dandelion 릴레이에 전파합니다. Transaction이 "정상적으로" 피어의 무작위 하위 집합으로 통합된 Transaction을 전파한다는 점을 제외하고는 fluff(단계)로 가는 transaction에 대해 동일한 작업을 수행합니다.
 이 매커니즘은 transaction 병합을 다룰수 있는 P2P protocol을 제공합니다.
 
-이 시나리오에 대한 시뮬레이션은 [여기](simulation_KR.md)에서 확인 할 수 있습니다.
+이 시나리오에 대한 시뮬레이션은 [여기](dandelion.md)에서 확인 할 수 있습니다.
 
 ## 레퍼런스
 

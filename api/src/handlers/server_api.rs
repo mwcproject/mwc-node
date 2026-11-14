@@ -15,33 +15,14 @@
 
 use super::utils::w;
 use crate::rest::*;
-use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
-use crate::web::*;
 use mwc_chain::{Chain, SyncState, SyncStatus};
-use mwc_crates::bytes::Bytes;
-use mwc_crates::hyper::Request;
 use mwc_crates::serde_json;
 use mwc_crates::serde_json::json;
 use std::convert::TryInto;
 use std::sync::Weak;
 
-// RESTful index of available api endpoints
-// GET /v1/
-pub struct IndexHandler {
-	pub list: Vec<String>,
-}
-
-impl IndexHandler {}
-
-impl Handler for IndexHandler {
-	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
-		json_response_pretty(&self.list)
-	}
-}
-
 /// Status handler. Post a summary of the server status
-/// GET /v1/status
 pub struct StatusHandler {
 	pub chain: Weak<Chain>,
 	pub peers: Weak<mwc_p2p::Peers>,
@@ -66,12 +47,6 @@ impl StatusHandler {
 			api_sync_status,
 			api_sync_info,
 		))
-	}
-}
-
-impl Handler for StatusHandler {
-	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
-		result_to_response(self.get_status())
 	}
 }
 

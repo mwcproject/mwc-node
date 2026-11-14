@@ -19,8 +19,7 @@ use crate::handlers::blocks_api::{BlockHandler, HeaderHandler};
 use crate::handlers::chain_api::{ChainHandler, KernelHandler, OutputHandler};
 use crate::handlers::peers_api::PeersConnectedHandler;
 use crate::handlers::pool_api::PoolHandler;
-use crate::handlers::transactions_api::TxHashSetHandler;
-use crate::handlers::version_api::VersionHandler;
+use crate::handlers::utils::w;
 use crate::types::{
 	BlockHeaderPrintable, BlockPrintable, LocatedTxKernel, OutputListing, OutputPrintable, Tip,
 	Version,
@@ -296,10 +295,14 @@ where
 	///
 
 	pub fn get_version(&self) -> Result<Version, Error> {
-		let version_handler = VersionHandler {
-			chain: self.chain.clone(),
-		};
-		version_handler.get_version()
+		let head = w(&self.chain)?
+			.head_header()
+			.map_err(|e| Error::Internal(format!("can't get head: {}", e)))?;
+
+		Ok(Version {
+			node_version: env!("CARGO_PKG_VERSION").to_owned(),
+			block_header_version: head.version.into(),
+		})
 	}
 
 	/// Returns details about the state of the current fork tip.
@@ -427,10 +430,22 @@ where
 		start_block_height: u64,
 		end_block_height: Option<u64>,
 	) -> Result<OutputListing, Error> {
-		let txhashset_handler = TxHashSetHandler {
-			chain: self.chain.clone(),
+		let chain = w(&self.chain)?;
+		let range = chain
+			.block_height_range_to_pmmr_indices(start_block_height, end_block_height)
+			.map_err(|e| {
+				let msg = format!(
+					"Block PMMR range for heights {}-{:?}, {}",
+					start_block_height, end_block_height, e
+				);
+				Error::chain_read_error(e, msg)
+			})?;
+		let out = OutputListing {
+			last_retrieved_index: range.0,
+			highest_index: range.1,
+			outputs: vec![],
 		};
-		txhashset_handler.block_height_range_to_pmmr_indices(start_block_height, end_block_height)
+		Ok(out)
 	}
 
 	pub fn get_connected_peers(&self) -> Result<Vec<PeerInfoDisplayLegacy>, Error> {

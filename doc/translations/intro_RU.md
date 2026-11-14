@@ -1,6 +1,6 @@
 # Введение в МимблВимбл и MWC
 
-*На других языках: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
+*На других языках: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [简体中文](intro_ZH-CN.md).*
 
 МимблВимбл это формат и протокол блокчейна, предоставляющий
 исключительную масштабируемость, приватность и обезличенность криптовалюты,

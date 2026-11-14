@@ -9,29 +9,49 @@
 
 ### Message Types
 
-There are currently 19 different types of P2P Messages:
+The current message IDs in `p2p/src/msg.rs::Type` are below. Gaps are intentional; do not renumber messages. `TorAddress` is reserved and unused.
 
-| Id | Message Type     | Description                                                                                                                              |
-|----|------------------|------------------------------------------------------------------------------------------------------------------------------------------|
-| 0  | Error            | Sent when an issue is found during communication with a peer. Usually followed by closing the connection.                                |
-| 1  | Hand             | First part of a handshake, sender advertises its version and characteristics.                                                            |
-| 2  | Shake            | Second part of a handshake, receiver of the first part replies with its own version and characteristics.                                 |
-| 3  | Ping             | Sent to confirm that the connection is still valid, and used to advertise the node's total_difficulty to confirm whether sync is needed. |
-| 4  | Pong             | The response to a ping message.                                                                                                          |
-| 5  | GetPeerAddrs     | Used to request addresses of new peers to connect to.                                                                                    |
-| 6  | PeerAddrs        | Peer addresses sent in response to a GetPeerAddrs message.                                                                               |
-| 7  | GetHeaders       | Used to request block headers from a peer.                                                                                               |
-| 8  | Header           | A single block header received from a peer.                                                                                              |
-| 9  | Headers          | Multiple block headers received from a peer in response to a GetHeaders message.                                                         |
-| 10 | GetBlock         | Used to request a block from a peer.                                                                                                     |
-| 11 | Block            | A single block received from a peer.                                                                                                     |
-| 12 | GetCompactBlock  | Used to request a compact block from a peer.                                                                                             |
-| 13 | CompactBlock     | A single compact block received from a peer.                                                                                             |
-| 14 | StemTransaction  | A stem transaction received from a peer.                                                                                                 |
-| 15 | Transaction      | A transaction received from a peer.                                                                                                      |
-| 16 | TxHashSetRequest | Used to request the transaction hashset from a peer.                                                                                     |
-| 17 | TxHashSetArchive | The transaction hashset in response to the TxHashSetRequest message.                                                                     |
-| 18 | BanReason        | Contains the reason your node was banned by a peer.                                                                                      |
+| ID | Message |
+| --- | --- |
+| 0 | `Error` |
+| 1 | `Hand` |
+| 2 | `Shake` |
+| 3 | `Ping` |
+| 4 | `Pong` |
+| 5 | `GetPeerAddrs` |
+| 6 | `PeerAddrs` |
+| 7 | `GetHeaders` |
+| 8 | `Header` |
+| 9 | `Headers` |
+| 10 | `GetBlock` |
+| 11 | `Block` |
+| 12 | `GetCompactBlock` |
+| 13 | `CompactBlock` |
+| 14 | `StemTransaction` |
+| 15 | `Transaction` |
+| 16 | `TxHashSetRequest` |
+| 17 | `TxHashSetArchive` |
+| 18 | `BanReason` |
+| 19 | `GetTransaction` |
+| 20 | `TransactionKernel` |
+| 23 | `TorAddress` |
+| 24 | `StartPibdSyncRequest` |
+| 25 | `GetOutputBitmapSegment` |
+| 26 | `OutputBitmapSegment` |
+| 27 | `GetOutputSegment` |
+| 28 | `OutputSegment` |
+| 29 | `GetRangeProofSegment` |
+| 30 | `RangeProofSegment` |
+| 31 | `GetKernelSegment` |
+| 32 | `KernelSegment` |
+| 33 | `HasAnotherArchiveHeader` |
+| 34 | `PibdSyncState` |
+| 35 | `StartHeadersHashRequest` |
+| 36 | `StartHeadersHashResponse` |
+| 37 | `GetHeadersHashesSegment` |
+| 38 | `OutputHeadersHashesSegment` |
+
+The layouts for message IDs 19, 20 and 23–38, and their shared segment structures, follow the current serializers in [p2p/src/msg.rs](../../p2p/src/msg.rs). The older message layouts remain an early protocol draft and omit some current capability/version-dependent fields, including onion proofs and coinbase-binding openings. Use the Rust `Writeable`/`Readable` implementations and negotiated protocol version for wire compatibility.
 
 ### Message structure
 
@@ -39,7 +59,7 @@ All P2P messages follow a generic message structure as follows.
 
 | Size | Name    | Data Type       | Description/Comments                                                              |
 |------|---------|-----------------|-----------------------------------------------------------------------------------|
-| 2    | Magic   | uint8[2]        | Magic number used to identify Mwc packets. Always hard-coded as {0x1E, 0xC5}.    |
+| 2    | Magic   | uint8[2]        | Magic number used to identify Mwc packets. Mainnet `{0x0D, 0x4D}`, Floonet `{0x11, 0x24}`, other/test contexts `{0x15, 0x13}`.    |
 | 1    | Type    | MessageTypeEnum | Identifier of the packet content.                                                 |
 | 8    | Length  | uint64          | The total length of the message. This will not include the header size (11 bytes).|
 | ?    | Payload | uint8[]         | The actual data.                                                                  |
@@ -89,6 +109,26 @@ TODO: Provide example
 
 ##### TxKernel
 
+Used as the leaf type in `KernelSegment`. Fields are serialized in the following order; feature data depends on the negotiated protocol version.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 1 | Features | uint8 | `0` = Plain, `1` = Coinbase, `2` = HeightLocked, `3` = NoRecentDuplicate. |
+| ? | FeatureData | uint8[] | Variant-specific fields described below. |
+| 33 | Excess | Commitment | Pedersen commitment to the kernel excess. |
+| 64 | ExcessSignature | uint8[64] | Aggregate signature in the binary consensus format (`R.x` followed by `s`). |
+
+For protocol version 2 and later, `FeatureData` contains:
+
+| Features | Size | Fields in wire order |
+|----------|------|----------------------|
+| Plain | 8 | Fee (`uint64`). |
+| Coinbase | 0 | No additional fields. |
+| HeightLocked | 16 | Fee (`uint64`), LockHeight (`uint64`). |
+| NoRecentDuplicate | 10 | Fee (`uint64`), RelativeHeight (`uint16`). Requires NRD to be enabled. |
+
+For protocol versions 0–1, `FeatureData` always occupies 16 bytes: an 8-byte fee followed by 8 bytes of height data. Coinbase uses zeroes for both fields; Plain uses zeroes for height data; HeightLocked uses a `uint64` height; NoRecentDuplicate uses six zero bytes followed by its `uint16` relative height. Kernel hashing also uses this fixed-width feature encoding. See [KernelFeatures and TxKernel](../../core/src/core/transaction.rs) and the [signature serializer](../../core/src/ser.rs).
+
 ##### ProofOfWork
 
 | Size | Name              | Data Type  | Description/Comments                                            |
@@ -98,6 +138,114 @@ TODO: Provide example
 | 8    | Nonce             | uint64     | Nonce increment used to mine the block.                         |
 | 1    | EdgeBits          | uint8      | Power of 2 used for the size of the cuckoo graph.               |
 | 336  | ProofNonces       | uint64[42] | The cuckoo proof nonces.                                        |
+
+##### Hash
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | Bytes | uint8[32] | Raw 32-byte hash, without a length prefix or hexadecimal text encoding. |
+
+##### SegmentIdentifier
+
+Identifies a subtree in an MMR (Merkle Mountain Range) or PMMR (prunable MMR).
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 1 | Height | uint8 | Segment tree height; capacity is `2^Height` leaves. |
+| 8 | Index | uint64 | Zero-based segment index. The first leaf index is `Index * 2^Height`. |
+
+The identifier occupies 9 bytes. The last segment can contain fewer leaves than its capacity. For the output bitmap, each leaf is a 1,024-bit bitmap chunk.
+
+##### SegmentRequest
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash for bitmap/output/range-proof/kernel requests; header-checkpoint MMR root for `GetHeadersHashesSegment`. |
+| 9 | Identifier | SegmentIdentifier | Requested segment. |
+
+The payload occupies 41 bytes.
+
+##### `SegmentResponse<T>`
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Identifies the archive or header-checkpoint root associated with the segment. |
+| ? | Segment | `Segment<T>` | Segment with leaves of type `T`. |
+
+##### `Segment<T>`
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 9 | Identifier | SegmentIdentifier | Identifies this segment. |
+| 8 | HashCount | uint64 | Number of supplied subtree hashes (`H`). |
+| 8 * H | HashPositions | uint64[H] | One-based PMMR positions, strictly increasing. |
+| 32 * H | Hashes | Hash[H] | Hashes corresponding to `HashPositions`, in the same order. |
+| 8 | LeafCount | uint64 | Number of supplied leaves (`L`). |
+| 8 * L | LeafPositions | uint64[L] | One-based PMMR positions, strictly increasing. |
+| ? | LeafData | T[L] | Leaves corresponding to `LeafPositions`, in the same order. Each leaf uses its type's serializer. |
+| ? | Proof | SegmentProof | Merkle proof connecting the segment to its MMR root. |
+
+Positions and their values are serialized as separate arrays, in the order above. The wire positions are one-based; the in-memory segment positions are zero-based. Counts are bounded by `READ_VEC_SIZE_LIMIT`, with further segment-size and proof validation during synchronization. See [segment serialization](../../core/src/core/pmmr/segment.rs).
+
+##### SegmentProof
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 8 | HashCount | uint64 | Number of proof hashes (`P`), at most 129. |
+| 32 * P | Hashes | Hash[P] | Proof hashes in the order expected by the MMR proof verifier. |
+
+##### OutputIdentifier
+
+The leaf type in `OutputSegment`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 1 | Features | uint8 | `0` = Plain, `1` = Coinbase. |
+| 33 | Commitment | Commitment | Pedersen commitment to the output. |
+
+Each identifier occupies 34 bytes. Range proofs are transferred separately through `RangeProofSegment`. See [OutputIdentifier](../../core/src/core/transaction.rs).
+
+##### RangeProof
+
+The leaf type in `RangeProofSegment`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 8 | Length | uint64 | Number of proof bytes (`N`), bounded by `MAX_PROOF_SIZE` (675 bytes with the current `bullet-proof-sizing` dependency feature). |
+| N | Proof | uint8[N] | The proof bytes, without padding. |
+
+This is the [network RangeProof encoding](../../core/src/ser.rs). The fixed-size `RangeProofPmmr` encoding is used for on-disk storage.
+
+##### BitmapSegment
+
+The output bitmap uses its own compact encoding, defined in [bitmap_accumulator.rs](../../chain/src/txhashset/bitmap_accumulator.rs).
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 9 | Identifier | SegmentIdentifier | Identifies the segment of bitmap chunks. |
+| 2 | BlockCount | uint16 | Number of encoded bitmap blocks (`B`), at least one. |
+| ? | Blocks | BitmapBlock[B] | Consecutive bitmap blocks. All except the final block contain 64 chunks. |
+| ? | Proof | SegmentProof | Merkle proof for the reconstructed bitmap segment. |
+
+The total decoded chunk count must fit the identifier's capacity and the configured PIBD message limits.
+
+##### BitmapBlock
+
+A block contains up to 65,536 bits, grouped into 1,024-bit chunks.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 1 | ChunkCount | uint8 | Number of chunks (`C`), from 1 to 64 within a `BitmapSegment`. |
+| 1 | Mode | uint8 | `0` = Raw, `1` = Positive, `2` = Negative. |
+| ? | Data | uint8[] | Mode-specific payload below. |
+
+| Mode | Data fields in wire order | Meaning |
+|------|---------------------------|---------|
+| Raw | `uint8[128 * C]` | Packed bits, most-significant bit first in each byte. Length follows from `ChunkCount`. |
+| Positive | Count (`uint16`), Indices (`uint16[Count]`) | Start with all bits clear and set the listed bit indices. |
+| Negative | Count (`uint16`), Indices (`uint16[Count]`) | Start with all bits set and clear the listed bit indices. |
+
+Sparse indices are zero-based within the block, strictly increasing, and less than `1024 * C`. The canonical encoding uses Positive when fewer than 4,096 bits are set, otherwise Negative when fewer than 4,096 bits are clear, otherwise Raw. Sparse counts therefore range from 0 to 4,095.
 
 ### Messages
 
@@ -255,6 +403,179 @@ The response to a TxHashSetRequest. Includes a zip stream of the archive after t
 |------|-----------|------------------|-------------------------|
 | 4    | BanReason | ReasonForBanEnum | The reason for the ban. |
 
+
+##### GetTransaction
+
+Message ID 19. Requests a transaction from the peer's transaction pool by kernel hash. A matching transaction is returned as `Transaction` (ID 15); if it is unavailable, the peer sends no response.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | KernelHash | Hash | Hash of a kernel belonging to the requested transaction. |
+
+##### TransactionKernel
+
+Message ID 20. Announces a transaction using a kernel hash. Peers advertising `TX_KERNEL_HASH` receive this announcement and can request the transaction with `GetTransaction`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | KernelHash | Hash | Announced kernel hash. |
+
+##### TorAddress
+
+Message ID 23 is reserved for backward compatibility. The current node decodes and skips this message. Its writer is compiled only for tests.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 8 | Length | uint64 | Byte length of the address (`N`). |
+| N | Address | uint8[N] | UTF-8 onion address, validated and normalized by `canonical_onion_v3`. |
+
+##### StartPibdSyncRequest
+
+Message ID 24 starts discovery of a PIBD (Partial Initial Block Download) snapshot. The payload is `ArchiveHeaderData`, occupying 40 bytes. A matching archive produces `PibdSyncState`; an archive mismatch produces `HasAnotherArchiveHeader`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Requested archive block hash. |
+| 8 | Height | uint64 | Height of that archive block. |
+
+The bitmap, output, range-proof and kernel requests below use `PIBD_HIST` peers. For the sequence of requests, root selection and validation, see [chain synchronization](../chain/chain_sync.md#pibd-state-synchronization).
+
+##### GetOutputBitmapSegment
+
+Message ID 25. Requests a segment of the snapshot's unspent-output bitmap. Uses the 41-byte `SegmentRequest` layout.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| 9 | Identifier | SegmentIdentifier | Requested bitmap segment. |
+
+##### OutputBitmapSegment
+
+Message ID 26. Response to `GetOutputBitmapSegment`, serialized as `OutputBitmapSegmentResponse`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| ? | Segment | BitmapSegment | Compressed bitmap blocks and their Merkle proof. |
+
+##### GetOutputSegment
+
+Message ID 27. Requests an output PMMR segment. Uses the 41-byte `SegmentRequest` layout.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| 9 | Identifier | SegmentIdentifier | Requested output segment. |
+
+##### OutputSegment
+
+Message ID 28. Response to `GetOutputSegment`. `OutputSegmentResponse` wraps a `SegmentResponse<OutputIdentifier>` and adds no bytes of its own.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| ? | Segment | `Segment<OutputIdentifier>` | Output identifiers, subtree hashes and Merkle proof. |
+
+##### GetRangeProofSegment
+
+Message ID 29. Requests a range-proof PMMR segment. Uses the 41-byte `SegmentRequest` layout.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| 9 | Identifier | SegmentIdentifier | Requested range-proof segment. |
+
+##### RangeProofSegment
+
+Message ID 30. Response to `GetRangeProofSegment`, using `SegmentResponse<RangeProof>`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| ? | Segment | `Segment<RangeProof>` | Range-proof leaves, subtree hashes and Merkle proof. |
+
+##### GetKernelSegment
+
+Message ID 31. Requests a kernel MMR segment. Uses the 41-byte `SegmentRequest` layout.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| 9 | Identifier | SegmentIdentifier | Requested kernel segment. |
+
+##### KernelSegment
+
+Message ID 32. Response to `GetKernelSegment`, using `SegmentResponse<TxKernel>`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Archive block hash. |
+| ? | Segment | `Segment<TxKernel>` | Kernel leaves, subtree hashes and Merkle proof. |
+
+##### HasAnotherArchiveHeader
+
+Message ID 33. Reports the archive available at the serving peer when a PIBD or header-hash request targets a different archive/root. Uses the same 40-byte `ArchiveHeaderData` layout as `StartPibdSyncRequest`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Hash of the peer's available archive block. |
+| 8 | Height | uint64 | Height of that archive block. |
+
+This response can follow either discovery request or any of the segment requests. Other serving failures can leave a request unanswered; the downloader handles retries and timeouts.
+
+##### PibdSyncState
+
+Message ID 34. Successful response to `StartPibdSyncRequest`, occupying 72 bytes.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | HeaderHash | Hash | Archive block hash. |
+| 8 | HeaderHeight | uint64 | Archive block height. |
+| 32 | OutputBitmapRoot | Hash | MMR root of the snapshot's unspent-output bitmap. |
+
+##### StartHeadersHashRequest
+
+Message ID 35. Requests the header-checkpoint MMR root for an archive height from a `HEADERS_HASH` peer. The payload is `HashHeadersData`, occupying 8 bytes.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 8 | ArchiveHeight | uint64 | Requested archive height. |
+
+The response is `StartHeadersHashResponse` when the height matches, or `HasAnotherArchiveHeader` when the peer serves a different archive height.
+
+##### StartHeadersHashResponse
+
+Message ID 36. Successful response to `StartHeadersHashRequest`, occupying 40 bytes.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 8 | ArchiveHeight | uint64 | Archive height covered by this header-checkpoint MMR. |
+| 32 | HeadersRootHash | Hash | Root of the MMR containing checkpoint header hashes. |
+
+The checkpoint MMR contains every 512th header hash, starting at genesis. See [header synchronization](../chain/chain_sync.md#header-hashes-and-parallel-bootstrap).
+
+##### GetHeadersHashesSegment
+
+Message ID 37. Requests a header-checkpoint hash segment. Uses `SegmentRequest`, occupying 41 bytes. Its `BlockHash` field carries the checkpoint MMR root returned by `StartHeadersHashResponse`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | BlockHash | Hash | Header-checkpoint MMR root. |
+| 9 | Identifier | SegmentIdentifier | Requested header-hash segment. |
+
+##### OutputHeadersHashesSegment
+
+Message ID 38. Response to `GetHeadersHashesSegment`, serialized as `HeadersHashSegmentResponse`.
+
+| Size | Name | Data Type | Description/Comments |
+|------|------|-----------|----------------------|
+| 32 | HeadersRootHash | Hash | Header-checkpoint MMR root. |
+| 32 | BlockHash | Hash | Root repeated as the first field of the nested `SegmentResponse<Hash>`. |
+| ? | Segment | `Segment<Hash>` | Checkpoint-hash leaves, subtree hashes and Merkle proof. |
+
+Both hash fields are present on the wire. The current sender sets both to the requested checkpoint root. Each leaf in this segment is a 32-byte `Hash`.
+
+The request/response behavior above follows [p2p/src/protocol.rs](../../p2p/src/protocol.rs); the send methods are in [p2p/src/peer.rs](../../p2p/src/peer.rs).
 
 ## Protocol Versions and Capabilities
 

@@ -1,7 +1,5 @@
 # State and Storage
 
-*Read this in other languages: [Korean](translations/state_KR.md), [日本語](translations/state_JP.md), [简体中文](translations/state_ZH-CN.md).*
-
 ## The Mwc State
 
 ### Structure
@@ -16,9 +14,8 @@ The full state of a Mwc chain consists of all the following data:
 
 In addition, all headers in the chain are required to anchor the above state
 with a valid proof of work (the state corresponds to the most worked chain).
-We note that once each range proof is validated and the sum of all kernels
-commitment is computed, range proofs and kernels are not strictly necessary for
-a node to function anymore.
+The implementation retains the state/proof/kernel data required for validation,
+serving peers and its pruning rules.
 
 ### Validation
 
@@ -27,8 +24,9 @@ With a full Mwc state, we can validate the following:
 1. The kernel signature is valid against its commitment (public key). This
    proves the kernel is valid.
 1. The sum of all kernel commitments equals the sum of all UTXO commitments
-   minus the total supply. This proves that kernels and output commitments are all
-   valid and no coins have unexpectedly been created.
+   minus the total supply, with the accumulated kernel offset included in the
+   commitment equation. This aggregate check constrains supply; it does not
+   replace individual rangeproof and kernel-signature validation.
 1. All UTXOs, range proofs and kernels hashes are present in their respective
    MMR and those MMRs hash to a valid root.
 1. A known block header with the most work at a given point in time includes

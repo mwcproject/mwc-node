@@ -1,3 +1,5 @@
+> Wallet-level CoinJoin design proposal. This page does not describe an exposed command in the current node or default wallet CLI. It is distinct from the implemented node Dandelion/stem pool; see [the transaction pool](internal/pool.md).
+
 # MWC-wallet coinjoin pool
 
 In a context of a low number of on chain transactions, Dandelion is not really effective. To improve privary, MWC-wallet will do a coinjoin at wallet level.  MWC-wallet will talk with other participating mwc-wallets and built a 'multikernel' transaction.

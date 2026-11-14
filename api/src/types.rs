@@ -108,83 +108,6 @@ impl Status {
 	}
 }
 
-/// TxHashSet
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "serde")]
-pub struct TxHashSet {
-	/// Output Root Hash
-	pub output_root_hash: String,
-	// Rangeproof root hash
-	pub range_proof_root_hash: String,
-	// Kernel set root hash
-	pub kernel_root_hash: String,
-}
-
-impl TxHashSet {
-	/// A TxHashSet in the context of the api is simply the collection of PMMR roots.
-	/// We can obtain these in a lightweight way by reading them from the head of the chain.
-	/// We will have validated the roots on this header against the roots of the txhashset.
-	pub fn from_head(chain: &mwc_chain::Chain) -> Result<TxHashSet, mwc_chain::Error> {
-		let header = chain.head_header()?;
-		Ok(TxHashSet {
-			output_root_hash: header.output_root.to_hex(),
-			range_proof_root_hash: header.range_proof_root.to_hex(),
-			kernel_root_hash: header.kernel_root.to_hex(),
-		})
-	}
-}
-
-/// Wrapper around a list of txhashset nodes, so it can be
-/// presented properly via json
-#[derive(Serialize, Deserialize, Debug, Clone)]
-#[serde(crate = "serde")]
-pub struct TxHashSetNode {
-	// The hash
-	pub hash: String,
-}
-
-impl TxHashSetNode {
-	pub fn get_last_n_output(
-		chain: &mwc_chain::Chain,
-		distance: u64,
-	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
-		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_output(distance)?;
-		for x in last_n {
-			return_vec.push(TxHashSetNode { hash: x.0.to_hex() });
-		}
-		Ok(return_vec)
-	}
-
-	pub fn get_last_n_rangeproof(
-		chain: &mwc_chain::Chain,
-		distance: u64,
-	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
-		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_rangeproof(distance)?;
-		for elem in last_n {
-			return_vec.push(TxHashSetNode {
-				hash: elem.0.to_hex(),
-			});
-		}
-		Ok(return_vec)
-	}
-
-	pub fn get_last_n_kernel(
-		chain: &mwc_chain::Chain,
-		distance: u64,
-	) -> Result<Vec<TxHashSetNode>, mwc_chain::Error> {
-		let mut return_vec = Vec::new();
-		let last_n = chain.get_last_n_kernel(distance)?;
-		for elem in last_n {
-			return_vec.push(TxHashSetNode {
-				hash: elem.0.to_hex(),
-			});
-		}
-		Ok(return_vec)
-	}
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(crate = "serde")]
 pub enum OutputType {
@@ -797,72 +720,6 @@ impl BlockPrintable {
 	}
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(crate = "serde")]
-pub struct CompactBlockPrintable {
-	/// The block header
-	pub header: BlockHeaderPrintable,
-	/// Nonce used with the block hash to derive kernel short IDs.
-	pub nonce: u64,
-	/// Full outputs, specifically coinbase output(s)
-	pub out_full: Vec<OutputPrintable>,
-	/// Full kernels, specifically coinbase kernel(s)
-	pub kern_full: Vec<TxKernelPrintable>,
-	/// Kernels (hex short_ids)
-	pub kern_ids: Vec<String>,
-}
-
-impl CompactBlockPrintable {
-	/// Convert a compact block into a printable representation suitable for
-	/// api response
-	pub fn from_compact_block(
-		cb: &core::CompactBlock,
-		chain: &mwc_chain::Chain,
-		include_merkle_proof: bool,
-	) -> Result<CompactBlockPrintable, mwc_chain::Error> {
-		chain.with_output_read_snapshot(|snapshot| {
-			Self::from_compact_block_snapshot(cb, snapshot, include_merkle_proof)
-		})
-	}
-
-	pub(crate) fn from_compact_block_snapshot(
-		cb: &core::CompactBlock,
-		snapshot: &mwc_chain::OutputReadSnapshot<'_>,
-		include_merkle_proof: bool,
-	) -> Result<CompactBlockPrintable, mwc_chain::Error> {
-		let block = snapshot.get_block_for_header(&cb.header)?;
-		let context_id = snapshot.get_context_id();
-		let out_full = cb
-			.out_full()
-			.iter()
-			.map(|output| {
-				let (pos, merkle_proof) =
-					snapshot.get_output_status(&output.identifier(), include_merkle_proof)?;
-				OutputPrintable::from_output_snapshot(
-					output,
-					pos,
-					merkle_proof,
-					context_id,
-					Some(&block.header),
-					false,
-				)
-			})
-			.collect::<Result<Vec<_>, _>>()?;
-		let kern_full = cb
-			.kern_full()
-			.iter()
-			.map(|x| TxKernelPrintable::from_txkernel(x))
-			.collect();
-		Ok(CompactBlockPrintable {
-			header: BlockHeaderPrintable::from_header(&cb.header)?,
-			nonce: cb.nonce,
-			out_full,
-			kern_full,
-			kern_ids: cb.kern_ids().iter().map(|x| x.to_hex()).collect(),
-		})
-	}
-}
-
 // For wallet reconstruction, include the header info along with the
 // transactions in the block
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -903,13 +760,6 @@ pub struct LocatedTxKernel {
 	pub tx_kernel: TxKernel,
 	pub height: u64,
 	pub mmr_index: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "serde")]
-pub struct PoolInfo {
-	/// Size of the pool
-	pub pool_size: usize,
 }
 
 #[cfg(test)]

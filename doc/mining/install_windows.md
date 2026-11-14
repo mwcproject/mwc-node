@@ -1,535 +1,541 @@
-# Mining Setup, Windows 10
+# Mining Setup, Windows
 
 ## About
 
-This document describes how to setup and **verify** the MWC full node, wallet and be ready for mining.
+This guide walks through installing and **verifying** a mainnet node, mining
+wallet and mining worker. Run the node and wallet on the same host; the worker
+can run locally or on another machine. Keep the node and wallet running while
+mining.
 
-## MWC QT Wallet
+## Wallet for mining
 
-Please note, the mwc-qt-wallet available at the [Wallet Download](https://www.mwc.mw/downloads) page is **not for mining**.
-If you are running qt wallet or mwc713, please **do not try to use it for mining**.
+Use the standalone `mwc-wallet` CLI as the mining wallet. Its foreign API builds
+the coinbase output that receives each block reward. Use Slatepack to transfer
+mature rewards to your receiving wallet, as shown below.
 
-## Preperquisited
+## Prerequisites
 
-Init Telnet if you don't have yet [https://www.technipages.com/windows-10-enable-telnet]
+Use Windows PowerShell on a supported Windows version and choose the Windows
+release matching your CPU architecture. PowerShell supplies `Expand-Archive`,
+`Get-FileHash`, `Invoke-RestMethod` and `Test-NetConnection` for this walkthrough.
 
-Expected that you have a PowerShell. All commands will be run from Windows 10 PowerShell.
+Keep any DLLs supplied with the release beside its executables. The normal node
+MSVC build statically links the C runtime; follow the selected release's runtime
+requirements if it uses a different build configuration. Install any required
+Microsoft Visual C++ runtime from Microsoft's official distribution.
+
+For **building from source**, install Git, CMake, stable Rust with the MSVC
+toolchain, and Visual Studio Build Tools with the **Desktop development with
+C++** workload and Windows SDK. The Windows build pipeline uses LLVM's
+`clang-cl` for native dependencies. Use a developer terminal where the compiler,
+linker and SDK are available. These are build tools; the packaged executables
+use their compiled runtime dependencies. See [Build and run](../build.md).
 
 ## High level Architecture
 
-Please check the high level connection diagram and understand the ports that are used by default. For P2P connections it is enough to have outbound connections. For Stratum protocol inbound connection are required.
+The node maintains the blockchain and provides work to the mining worker. The
+wallet creates the reward output, and the worker submits solutions to the node.
 
-![](Install_mac_images/architecture.png)
+![Connections between miners, node, wallet and MWC network](Install_mac_images/architecture.png)
 
-Please note IPs `127.0.0.1` are open for only local host connections. `0.0.0.0` allows anyone to connect to your host.
+| Connection | Mainnet address in this guide | Purpose |
+| --- | --- | --- |
+| Wallet → node API | `127.0.0.1:3413` | Refresh wallet state and post transactions |
+| Node ↔ network peers | TCP `3414` | Exchange blocks and transactions |
+| Node → wallet foreign API | `127.0.0.1:3415` | Build coinbase outputs |
+| Mining worker → node Stratum | `127.0.0.1:3416` locally | Receive jobs and submit solutions |
 
-Please adjust IPs according to your needs and update your firewall rules.
+`127.0.0.1` accepts connections from the same host. For a remote worker, bind
+Stratum to the node's LAN or VPN address and allow the worker through the
+firewall. `0.0.0.0` binds all IPv4 interfaces. Keep the wallet and node API
+listeners on loopback for this setup. Outbound peer connections allow the node
+to synchronize; an inbound TCP `3414` rule also lets other nodes connect to it.
 
-Note: By default connections are not entrypted. If you need SSL connections you will need to configure certificates as well. It is a different topic and is not covered in this document.
+Stratum uses plain TCP. Use a VPN or an SSH tunnel to protect mining traffic
+over an untrusted network.
 
 ## Data Location, data clean up
 
-mwc-node and mwc-wallet data is located in the `~/.mwc` directory.
+The default mainnet data directory is `~/.mwc/main` (`%USERPROFILE%\.mwc\main` on Windows):
 
-mwc-wallet data is located in the `~/.mwc/main/wallet_data/` directory. The most critical piece of data is the wallet seed found at `~/.mwc/main/wallet_data/wallet.seed`.
+| Path under that directory | Contents |
+| --- | --- |
+| `mwc-server.toml` | Node configuration |
+| `mwc-server.log` | Node log |
+| `chain_data/` | Blockchain and peer databases |
+| `.api_secret`, `.foreign_api_secret` | Node API credentials |
+| `mwc-wallet.toml` | Wallet configuration |
+| `mwc-wallet.log` | Wallet log |
+| `wallet_data/wallet.seed` | Encrypted wallet seed |
+| `wallet_data/db/`, `wallet_data/saved_txs/` | Wallet records and saved transactions |
 
-In case you want to do clean setup, you can delete all directories. Please note, you will **lose any funds in your wallet** in this case.
-```
-rm -rf ~/.mwc
-```
+Floonet uses `~/.mwc/floo`. A configuration in the working directory, or an
+explicitly selected configuration/data directory, changes these locations.
+Check the configured paths when using an existing installation.
 
-You might need to do this to clean your setup if an error is made.
+Before cleaning up, stop the affected processes and back up the wallet data,
+configuration and recovery phrase. Keep the recovery phrase securely offline.
+For a deliberate blockchain rebuild, move only `chain_data` to a backup location
+and restart the node to synchronize again. Preserve `wallet_data` and the API
+credentials so the wallet and its pending transaction records remain available.
 
 ## Install of MWC node and mwc-wallet
 
-In this install we will install everything at `~/my_mwc_install`. All commands referred to assume this path.
+Download matching releases for your operating system and CPU architecture from
+[mwc-node releases](https://github.com/mwcproject/mwc-node/releases) and
+[mwc-wallet releases](https://github.com/mwcproject/mwc-wallet/releases).
+Read their release notes for network upgrade requirements. Download the matching
+SHA-256 checksum files alongside the archives; the release scripts name these
+`*-sha256sum.txt`.
 
-Download mwc node from [https://github.com/mwcproject/mwc-node/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-node-XXXXX-win-x64.zip`.
+Replace `NODE_ARCHIVE.zip` and `WALLET_ARCHIVE.zip` below with the downloaded
+filenames. Calculate their hashes and compare the hexadecimal values with the
+matching checksum files:
 
-Download mwc-wallet from [https://github.com/mwcproject/mwc-wallet/releases/latest]. We are assuming that the resulting file will be located at `~/Downloads/mwc-wallet-XXXXX-win-x64.zip`.
-
-Now let's install everything into `~/my_mwc_install`.
-
-```bash
-mkdir ~/my_mwc_install
-cd ~/my_mwc_install
-expand-archive -path ~/Downloads/mwc-node-*-win-x64.zip -destinationpath .
-expand-archive -path ~/Downloads/mwc-wallet-*-win-x64.zip -destinationpath .
+```powershell
+Get-FileHash ~/Downloads/NODE_ARCHIVE.zip -Algorithm SHA256
+Get-FileHash ~/Downloads/WALLET_ARCHIVE.zip -Algorithm SHA256
 ```
 
-Your output should be something like this:
-```
-PS C:\Users\konst> mkdir ~/my_mwc_install                                                                            
+Each command prints a `Hash` value. Compare its 64 hexadecimal characters with
+the SHA-256 value in that archive's checksum file. Proceed when both values
+match. If a value differs, download the archive and its matching checksum file
+again and repeat the check.
 
-    Directory: C:\Users\konst
+Extract into `~/my_mwc_install`:
 
-
-Mode                LastWriteTime         Length Name
-----                -------------         ------ ----
-d-----       11/11/2019  10:03 PM                my_mwc_install
-
-
-PS C:\Users\konst> cd ~/my_mwc_install      
-PS C:\Users\konst\my_mwc_install> expand-archive -path ~/Downloads/mwc-node-*-win-x64.zip -destinationpath .
-PS C:\Users\konst\my_mwc_install> expand-archive -path ~/Downloads/mwc-wallet-*-win-x64.zip -destinationpath .
-Volume serial number is 34E4-1A1F
-C:.
-├───mwc
-└───mwc-wallet
+```powershell
+New-Item -ItemType Directory -Force ~/my_mwc_install
+Set-Location ~/my_mwc_install
+Expand-Archive -LiteralPath ~/Downloads/NODE_ARCHIVE.zip -DestinationPath .
+Expand-Archive -LiteralPath ~/Downloads/WALLET_ARCHIVE.zip -DestinationPath .
 ```
 
-Now your mwc-node is located at `~/my_mwc_install/mwc/mwc.exe` and your mwc-wallet is located at `~/my_mwc_install/mwc-wallet/mwc-wallet.exe`.
+The release archives place the executables in `mwc/mwc.exe` and
+`mwc-wallet/mwc-wallet.exe`. Confirm both start:
 
-One common task is to send mined MWC from the mwc-wallet to the Qt wallet. In order to do that, the most convenient method is to use the "file based send". The mwc-wallet command to send is the following:
-
-```
-# mwc-wallet send -m file -d <location_to_save_file> <amount_to_send>
-```
-
-In order to receive it, you will need to click on "receive mwc by file". Select the file created in the last step. A new file saved in the same location as the file from the last step will be created with the suffix .response and this file can be finalized by the mwc-wallet with the following command:
-
-```
-# mwc-wallet finalize -i <location_of_response_file>
+```powershell
+./mwc/mwc.exe --version
+./mwc-wallet/mwc-wallet.exe --version
 ```
 
-This will allow for sending of mwc from mwc-wallet into the Qt wallet.
+Each command should print the program's version and return to the prompt.
+Check that the versions match the releases you downloaded. If either command
+reports an unsupported executable or a missing library, resolve the architecture
+or runtime dependency using the prerequisites above before starting the node.
+
+To transfer mature mined coins, create an encrypted Slatepack. Replace the
+recipient address and amount with your receiving wallet's address and the
+amount to transfer:
+
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe send --method slatepack --slatepack_recipient 'RECIPIENT_ADDRESS' --dest mined.slatepack 10
+```
+
+Receive `mined.slatepack` in the destination wallet and save its response as
+`mined.response.slatepack`. Finalize and broadcast it from the mining wallet:
+
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe finalize --file mined.response.slatepack
+```
 
 ## Start the node
 
-Start the node for the first run.
+Open a terminal and start the node:
+
+```powershell
+~/my_mwc_install/mwc/mwc.exe server run
 ```
-> ~/my_mwc_install/mwc/mwc.exe
-```
 
-![](Install_mac_images/scr_node.png)
+![Node terminal interface](Install_mac_images/scr_node.png)
 
-
-mwc-node has few commands. Run `~/my_mwc_install/mwc/mwc.exe help` to explore them.
-
-Please keep your node running until we setup the wallet. You should be able to see that the node was able connect to the peers and download the chain.
-
+Use the terminal interface to watch synchronization. Explore available commands
+in another terminal with `~/my_mwc_install/mwc/mwc.exe --help` and `~/my_mwc_install/mwc/mwc.exe server --help`.
 
 #### Validate the node install
 
-Please check that the node was able to create the files and download the data.
+Check that the first run created the node's configuration and data directory:
 
-Check the files.
-```
-> cd ~
-> tree /F .mwc
-C:\USERS\KONST\.MWC
-└───main
-    │   .api_secret
-    │   mwc-server.log
-    │   mwc-server.toml
-    │
-    └───chain_data
-        │   mwc.lock
-        │
-        ├───header
-        │   ├───header_head
-        │   │       pmmr_data.bin
-        │   │       pmmr_hash.bin
-        │   │
-        │   └───sync_head
-        │           pmmr_data.bin
-        │           pmmr_hash.bin
-        │
-        ├───lmdb
-        │       data.mdb
-        │       lock.mdb
-        │
-        ├───peer
-        │       data.mdb
-        │       lock.mdb
-        │
-        └───txhashset
-            ├───kernel
-            │       pmmr_data.bin
-            │       pmmr_hash.bin
-            │       pmmr_size.bin
-            │
-            ├───output
-            │       pmmr_data.bin
-            │       pmmr_hash.bin
-            │       pmmr_leaf.bin
-            │
-            └───rangeproof
-                    pmmr_data.bin
-                    pmmr_hash.bin
-                    pmmr_leaf.bin
+```powershell
+Get-ChildItem -Force ~/.mwc/main
 ```
 
-Please note the location of the:
+The listing should include these entries:
 
-log file: `~/.mwc/mwc-server.log`
-config: `~/.mwc/mwc-server.toml`
+- `mwc-server.toml` — node configuration.
+- `mwc-server.log` — node log.
+- `.api_secret` and `.foreign_api_secret` — API credential files.
+- `chain_data` — blockchain data directory.
 
-Meanwhile feel free to check the logs at `~/.mwc/mwc-server.log`
+If an entry is missing, check whether the node uses a configuration in another
+working directory or has reported a startup error.
 
-If everything goes well, you shouldn't see anything logged at the "ERROR" level. Output from the following command should be empty
+If startup fails or synchronization stops progressing, read the latest log
+entries:
+
+```powershell
+Get-Content ~/.mwc/main/mwc-server.log -Tail 50
 ```
->  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern  'ERROR'
-```
 
-**Note: It is expected that a single node and wallet only are running per host!**
-If you try to run several instances, you will likely to see some errors.
+This prints the last 50 lines. Look for `ERROR` entries describing the failure,
+such as a port already in use or an inaccessible data directory. Correct the
+reported cause and restart the node if it exited. For synchronization problems,
+use the diagnostic guidance linked below.
 
-You will need to wait a while for the node to download the blockchain data. When the download is complete, the UI will show the following: `Current Status: Running`.
-If you see this status, congratulations, your node is running. We can start with a wallet setup.
+Before mining, wait for `Current Status: Running` and check that the validated
+chain height has caught up with the header chain and connected peers. See
+[Chain synchronization](../chain/chain_sync.md) for the stages and diagnostics.
+Use a separate data directory and distinct listener ports for each additional
+instance on the same machine.
 
 ## Init wallet
 
-If you don't have an mwc-wallet instance, you will need to create a new one. Please note, if you already have an mwc-wallet instance, you can restore it through mnemonic or seed file. It is covered below.
+Explore the commands and initialization options:
 
-Let's explore first what mwc-wallet can do by running:
-
-```
-> ~/my_mwc_install/mwc-wallet/mwc-wallet.exe --help
-mwc-wallet 2.4.5
-The Mwc Team
-Reference MWC Wallet
-
-USAGE:
-    mwc-wallet [FLAGS] [OPTIONS] [SUBCOMMAND]
-
-FLAGS:
-    -e, --external      Listen on 0.0.0.0 interface to allow external connections (default is 127.0.0.1)
-        --floonet       Run mwc against the Floonet (as opposed to mainnet)
-    -h, --help          Prints help information
-    -s, --show_spent    Show spent outputs on wallet output commands
-        --usernet       Run mwc as a local-only network. Doesn't block peer connections but will not connect to any peer
-                        or seed
-    -V, --version       Prints version information
-
-OPTIONS:
-    -a, --account <account>                          Wallet account to use for this operation [default: default]
-    -r, --api_server_address <api_server_address>
-            Api address of running node on which to check inputs and post transactions
-
-    -d, --data_dir <data_dir>                        Directory in which to store wallet files
-    -p, --pass <pass>                                Wallet passphrase used to encrypt wallet seed
-
-SUBCOMMANDS:
-    account      List wallet accounts or create a new account
-    cancel       Cancels an previously created transaction, freeing previously locked outputs for use again
-    check        Checks a wallet's outputs against a live node, repairing and restoring missing outputs if required
-    finalize     Processes a receiver's transaction file to finalize a transfer.
-    help         Prints this message or the help of the given subcommand(s)
-    info         Basic wallet contents summary
-    init         Initialize a new wallet seed file and database
-    invoice      Initialize an invoice transction.
-    listen       Runs the wallet in listening mode waiting for transactions
-    outputs      Raw wallet output info (list of outputs)
-    owner_api    Runs the wallet's local web API
-    pay          Spend coins to pay the provided invoice transaction
-    receive      Processes a transaction file to accept a transfer from a sender
-    recover      Recover a wallet.seed file from a recovery phrase (default) or displays a recovery phrase for an
-                 existing seed file
-    repost       Reposts a stored, completed but unconfirmed transaction to the chain, or dumps it to a file
-    restore      Restores a wallet contents from a seed file
-    send         Builds a transaction to send coins and sends to the specified listener directly
-    submit       Submits a transaction that has already been finalized but not submitted to the network yet
-    txs          Display transaction information
-```
-Any command can be explored by running `help <command>`. For example this command will show you details for 'init':  `~/my_mwc_install/mwc-wallet/mwc-wallet.exe help init`
-
-
-To create the new wallet please run command below. We strongly recommend to setup the password for your seed.
-```
-> ~/my_mwc_install/mwc-wallet/mwc-wallet.exe init
-Please enter a password for your new wallet
-Password: Confirm Password: 20191111 18:13:13.180 WARN mwc_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
-Your recovery phrase is:
-
-cousin cargo avoid sk ....  fee surround valve prepare
-
-Please back-up these words in a non-digital format.
-Command 'init' completed successfully
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe --help
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe init --help
 ```
 
-Please store the recovery phrase in the secure place, preferably offline on a physical medium. The mnemonic will allow you to recover your funds in a new wallet even if your wallet files are destroyed.
+For a new mining wallet, run:
 
-If you already have a wallet, you can init it with your existing seed and resync it with a full node. Please note, if your wallet has any coins, you will only see them after a resyncing with the "restore" command.
-```
-> ~/my_mwc_install/mwc-wallet/mwc-wallet init -r
-Please enter your recovery phrase:
-phrase> cousin cargo avo .... ken coffee surround valve prepare
-Please provide a new password for the recovered wallet
-Password: Confirm Password: 20191111 18:17:49.394 WARN mwc_wallet_impls::seed - Generating wallet seed file at: ~/.mwc/main/wallet_data/wallet.seed
-Your recovery phrase is:
-
-cousin cargo avoid sk .... fee surround valve prepare
-
-Please back-up these words in a non-digital format.
-Command 'init' completed successfully
-
-> ~/my_mwc_install/mwc-wallet/mwc-wallet check
-Password:
-20191111 18:22:25.359 WARN mwc_wallet_controller::command - Starting wallet check...
-20191111 18:22:25.359 WARN mwc_wallet_controller::command - Updating all wallet outputs, please wait ...
-20191111 18:22:25.394 WARN mwc_wallet_libwallet::internal::restore - Starting wallet check.
-20191111 18:22:25.665 WARN mwc_wallet_libwallet::internal::restore - Checking 895 outputs, up to index 895. (Highest index: 895)
-20191111 18:22:25.666 WARN mwc_wallet_libwallet::internal::restore - Scanning 895 outputs in the current MWC utxo set
-20191111 18:22:25.739 WARN mwc_wallet_libwallet::internal::restore - Identified 0 wallet_outputs as belonging to this wallet
-20191111 18:22:25.739 WARN mwc_wallet_controller::command - Wallet check complete
-Command 'check' completed successfully
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe init
 ```
 
-#### Validation
-
-Please validate that your wallet created the files:
-
-```
-PS C:\Users\konst> cd ~
-PS C:\Users\konst> tree /F .mwc
-Folder PATH listing for volume Windows
-Volume serial number is 34E4-1A1F
-C:\USERS\KONST\.MWC
-└───main
-    │   .api_secret
-    │   mwc-wallet.log
-    │   mwc-wallet.toml
-    │
-    └───wallet_data
-        │   wallet.seed
-        │
-        ├───db
-        │   └───lmdb
-        │           data.mdb
-        │           lock.mdb
-        │
-        └───saved_txs
-```
-
-Please note the location of the:
-
-logs : `~/.mwc/mwc-wallet.log`
-config: `~/.mwc/mwc-wallet.toml`
-
-Confirm that there were no errors during wallet initialization:
-
-```
-> cat ~/.mwc/main/mwc-wallet.log | Select-String -Pattern  'ERROR'
-```
-
-## Start Listener for the Wallet
-
-In order to mine, mwc-wallet needs to be run in listening mode. The wallet will build the coinbase transaction for the blocks that your miner mines.
-
-```
-> ~/my_mwc_install/mwc-wallet/mwc-wallet listen
-Password:
-20191111 18:59:15.332 WARN mwc_wallet_controller::controller - Starting HTTP Foreign listener API server at 127.0.0.1:3415.
-20191111 18:59:15.333 WARN mwc_wallet_controller::controller - HTTP Foreign listener started.
-```
-And your wallet will run until you interrupt it.
-
-Congratulations, if you pass validation, your wallet is ready. Please keep it running for the duration of the time you are mining.
-
-#### Validate
-
-Please periodically check if logs don't have errors with:
-```
-> cat ~/.mwc/main/mwc-wallet.log | Select-String -Pattern  'ERROR'
-```
-
-Verify that the wallet can build a Coinbase using the mining API:
-
-```
-> (Invoke-WebRequest -UseBasicParsing -Uri http://localhost:3415/v2/foreign -Method POST -ContentType "application/json" -Body '{"jsonrpc":"2.0","method":"build_coinbase","id":1,"params":{"block_fees":{"fees":0,"height":5,"key_id":null,"binding_digest":"0101010101010101010101010101010101010101010101010101010101010101"}}}').Content
-```
-
-Expect `result.Ok` with the following fields (hex values vary by wallet and are abbreviated here):
-
-```json
-{
-  "id": 1,
-  "jsonrpc": "2.0",
-  "result": {
-    "Ok": {
-      "output": {"features": "Coinbase", "commit": "<hex>", "proof": "<hex>"},
-      "kernel": {"features": "Coinbase", "excess": "<hex>", "excess_sig": "<hex>"},
-      "key_id": "<wallet key identifier>",
-      "coinbase_opening": "<66 hex characters>"
-    }
-  }
-}
-```
-
-This call creates an unconfirmed Coinbase record in the wallet. The example height and `binding_digest` are for this API check only. During mining, mwc-node supplies the actual height and calculates the digest from each block template and its parent chain state.
-
-## Setup mwc-node to run miner locally
-
-Please update config for your mwc-node.
-
-- Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
-- Edit `~/.mwc/main/mwc-server.toml` with your favorite editor.
-
-Change the value for `enable_stratum_server` to
-```
-#whether stratum server is enabled
-enable_stratum_server = true
-```
-- Start mwc-node
-```
-> ~/my_mwc_install/mwc/mwc.exe
-```
-
-You are ready to to run your miner locally on the same host.
-
-#### Validate
-
-Check if there any errors are in the node logs
-```
->  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'ERROR'
-```
-
-Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
-```
-> cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'Stratum server started'
-20191111 19:32:36.088 WARN mwc_servers::mining::stratumserver - Stratum server started on 127.0.0.1:3416
-```
-
-Verify that stratum is configured correctly with telnet:
-```
-> telnet  127.0.0.1 3416
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
-```
-
-## Setup mwc-node to run a miner on a different host
-
-Please update the config for your mwc-node.
-
-- Stop mwc-node if it is running. Please let mwc-wallet run in listening mode.
-- Edit `~/.mwc/mwc-server.toml` with your favorite editor.
-
-Change the value for `enable_stratum_server` and `stratum_server_addr`
-```
-#whether stratum server is enabled
-enable_stratum_server = true
-
-#what port and address for the stratum server to listen on
-stratum_server_addr = "0.0.0.0:3416"
-```
-stratum_server_addr needs to listen on 0.0.0.0 in order to accept connections from other hosts.
-
-- Start mwc-node
-```
-> ~/my_mwc_install/mwc/mwc.exe
-```
-
-#### Validate node from local host
-
-Check if there are any errors in the node logs
-```
->  cat ~/.mwc/main/mwc-server.log | Select-String -Pattern 'ERROR'
-```
-
-Check if stratum is activated. The following line will be present in your log file if your node is configured correctly:
-```
-> cat ~/.mwc/main/mwc-server.log |  Select-String -Pattern 'Stratum server started'
-20191111 19:32:36.088 WARN mwc_servers::mining::stratumserver - Stratum server started on 0.0.0.0:3416
-```
-
-Verify that stratum is configured correctly with telnet:
-```
-> telnet  127.0.0.1 3416
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
-```
-
-#### Obtain my public IP.
-
-Your miner will need to initiate a connection to your public IP. You can get your Public IP from the following site  [https://whatismypublicip.com/]
-
-Please store your IP, you will need it to setup your miner and validate the setup.
-
-#### Open port at Windows
-
-Ensure the port is open and not being blocked by the firewall.
-The easiest way is to disable the firewall.
-
-#### Do you have a router? Map 3416 port for incoming connections
-
-If you have a router you need to setup the port forwarding for incoming connections.
-
-If you don't know how to do that, please do the search for the phrase: how to setup 'router brand' port forwarding.
-For example: `how to setup Negtgear port forwarding`  will return you a link
-[https://www.noip.com/support/knowledgebase/setting-port-forwarding-netgear-router-genie-firmware/]
-
-We recommend you just map your router port 3416 to your device local IP address.
-
-Here is how you can find your local IP for Windows [https://support.microsoft.com/en-us/help/4026518/windows-10-find-your-ip-address]
-
-#### Validate if your port is open for INCOMING connections
-
-Please verify that Port Tester shows that your port is open:
-[https://www.yougetsignal.com/tools/open-ports/]
-
-Here is how it looks when I didn't open port at my router, didn't disable firewall, or didn't run mwc-node with a proper setup.
-
-![](Install_mac_images/port_close.png)
-
-Here how it looks like when I did everything properly.
-
-![](Install_mac_images/port_open.png)
-
-**Please note! It doesn't make sense to continue with miner if your port is not open!** This tool works well and if your port is closed it means that the
- router, firewall or mwc-node are not configured correctly.
-
-#### Validate stratum connection from your miner's host
-
-If you can ssh to the miner host, please validate with telnet is miner can access the node:
-```
-> telnet  <MWC_NODE_PUBLIC_IP> 3416
-{"id":"Stratum","jsonrpc":"2.0","method":"job","params":{"difficulty":1,"height":1151,"job_id":0,"pre_pow":"0001000000000000047f000000005dca547e0000072fb559593ebaed969308cefd2042c2e8384fbf62497c5a4f716bde7c710b9b34c1a4b411b494185053db66c9f7f661b9507d65a334495e7915372232d5362b2f2390b11ffcefef38ca3aed681a86a54643d8616a8c0e9d3b2c94d26772a0af3f1fcb38a62f84fa18aa906b94e02df1a2fde187512461dbdb14a8785bd4c20bada01d7f2d0732b8ed59902155c765286a81267e23bab3ae57a29ced0f62000000000000000000000000000000000000000000000000000000000000000000000000000008fe00000000000008fe0000000cf02a33580000019f"}}   
-```
-
-#### Node setup is DONE for access from the internet.
-
-Congratulations, if you pass all validation steps, you are done with setup for mwc-node and mwc node.
-You can finish miner setup.
-
-
-## MINER
-
-There are many miner that you can run. MWC miner 100% compartible with mwc miner. If you are mining for mwc, just redirect to mwc node.
-
-#### Mwc miner
-
-MWC clone of mwc miner you can get here [https://github.com/mwcproject/mwc-miner]
-Please follow the instruction how to set it up.
-
-#### GMiner
-
-If you are rinning GMiner please run.
-User name can have any value. You will see your miner in the mwc-node console under this name.
-
-Your server IP should be 127.0.0.1 if you run your miner on the same host that you run mwc node and mwc-wallet.
-Or you should use your mwc-node public IP if it is run on different host. Please check that your port is open and 'Validate stratum connection from your miner side' is passed.
-
-To run in C31 mode:
-```
-miner.exe --algo mwc31 --server <NODE_IP>  --port 3416 --user WhatEverName
-```
-OR for C29d:
-```
-miner.exe --algo cuckarood29 --server <NODE_IP> --port 3416 --user WhatEverName
-```
-
-## Checking your coins
-
-You might want to check how much coins you was able to main and see the output.
-
-You can view the balance with `info` command
-```
+Enter a strong password when prompted. Write down the generated recovery phrase
+and store it securely offline. The phrase lets you recover your funds if the
+wallet files are lost; a full wallet backup also preserves transaction records.
+
+To recover an existing wallet into a fresh wallet directory, enter its recovery
+phrase at the prompt and choose a new password:
+
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe init --recover
 ~/my_mwc_install/mwc-wallet/mwc-wallet.exe info
 ```
 
-You can check your outputs with `outputs`
+Run `info` after the node is synchronized and the wallet's node address and
+credentials match the settings described below. It automatically synchronizes
+the recovered wallet with the node and displays the balance. For recovery from
+a backed-up `wallet.seed`, restore that file into the configured wallet data
+directory while the wallet is stopped, retain its original password, and then
+run `info`.
+
+#### Validation
+
+Check that initialization created the wallet configuration and encrypted seed:
+
+```powershell
+Get-ChildItem -Force ~/.mwc/main
+Get-ChildItem -Force ~/.mwc/main/wallet_data
 ```
-~/my_mwc_install/mwc-wallet/mwc-wallet.exe output
+
+The first listing should include `mwc-wallet.toml`, `mwc-wallet.log` and
+`wallet_data`. The second should include `wallet.seed`, `db`, `saved_txs` and
+`archived_txs`. The transaction directories can be empty for a new wallet.
+
+If initialization reported an error or the seed is missing, check the configured
+data directory and inspect the last 50 wallet log lines:
+
+```powershell
+Get-Content ~/.mwc/main/mwc-wallet.log -Tail 50
 ```
 
+Look for the error describing why initialization failed, such as a directory
+access problem. Resolve that cause before starting the listener. For an
+existing wallet, preserve its seed and use its original password.
 
+## Start Listener for the Wallet
 
+Edit the existing `[wallet]` section in `~/.mwc/main/mwc-wallet.toml` to enable
+the local foreign API socket:
+
+```toml
+[wallet]
+api_listen_interface = "127.0.0.1"
+api_listen_port = 3415
+check_node_api_http_addr = "http://127.0.0.1:3413"
+```
+
+Update these keys within the generated section and retain its other settings.
+Confirm that `node_api_secret_path` points to the node's `.foreign_api_secret`
+file. The default node and wallet paths share `~/.mwc/main/.foreign_api_secret`;
+for a custom layout, use the absolute path to the node's file.
+
+Start the wallet's socket listener in a separate terminal:
+
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe listen --no_tor
+```
+
+Enter the wallet password and leave the listener running. The node calls this
+local listener to create coinbase outputs while mining.
+
+#### Validate
+
+Check `~/.mwc/main/mwc-wallet.log` for listener startup or binding errors. Query
+the foreign API from the same host:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:3415/v2/foreign -Method Post -ContentType 'application/json' -Body '{"jsonrpc":"2.0","method":"check_version","id":1,"params":[]}' | ConvertTo-Json -Depth 10
+```
+
+Expect `result.Ok` containing `foreign_api_version` and
+`supported_slate_versions`. A connection failure means the socket could not be
+reached; check that the listener is running at the configured interface and
+port. If the response contains `error` or `result.Err`, use its message and the
+wallet log to resolve the failure before continuing.
+
+For a one-time check that the wallet can build a coinbase, send this request:
+
+```powershell
+Invoke-RestMethod -Uri http://127.0.0.1:3415/v2/foreign -Method Post -ContentType 'application/json' -Body '{"jsonrpc":"2.0","method":"build_coinbase","id":1,"params":{"block_fees":{"fees":0,"height":5,"key_id":null,"binding_digest":"0101010101010101010101010101010101010101010101010101010101010101"}}}' | ConvertTo-Json -Depth 10
+```
+
+Expect `result.Ok` with `output`, `kernel`, `key_id` and `coinbase_opening`
+(66 hexadecimal characters). This check creates an unconfirmed candidate output
+in the wallet. The sample height and `binding_digest` belong to this check;
+during mining, the node supplies the actual height and digest for each template.
+Loopback requests are permitted by the wallet's mining API access policy.
+If this request returns `error` or `result.Err`, inspect its message and the
+wallet log. Continue after the wallet successfully returns the coinbase fields.
+
+## Setup mwc-node to run miner locally
+
+Keep the wallet listener running. Stop the node, then update the existing
+`[server.stratum_mining_config]` section in `~/.mwc/main/mwc-server.toml`:
+
+```toml
+[server.stratum_mining_config]
+enable_stratum_server = true
+stratum_server_addr = "127.0.0.1:3416"
+wallet_listener_url = "http://127.0.0.1:3415"
+burn_reward = false
+```
+
+`wallet_listener_url` is the base URL of the mining wallet. With
+`burn_reward = false`, the node obtains reward outputs from that wallet.
+Restart the node:
+
+```powershell
+~/my_mwc_install/mwc/mwc.exe server run
+```
+
+#### Validate
+
+Check the Stratum startup message and the listening socket:
+
+```powershell
+Select-String -Path ~/.mwc/main/mwc-server.log -Pattern 'Stratum server started'
+Test-NetConnection -ComputerName 127.0.0.1 -Port 3416
+```
+
+The first command should find `Stratum server started on 127.0.0.1:3416`
+from the current node run. The second command should show `TcpTestSucceeded: True`.
+If the startup message is missing or the connection fails, check that the
+running node loaded the edited configuration and review its startup log.
+Check the wallet log if the node reports a failure obtaining a reward output.
+
+To check the protocol, open a TCP connection and send a login followed by a
+job request:
+
+```powershell
+$client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 3416)
+$stream = $client.GetStream()
+$stream.ReadTimeout = 10000
+$writer = [System.IO.StreamWriter]::new($stream)
+$writer.AutoFlush = $true
+$reader = [System.IO.StreamReader]::new($stream)
+try {
+    $writer.WriteLine('{"id":"1","jsonrpc":"2.0","method":"login","params":{"login":"setup-check","pass":"x","agent":"setup-check"}}')
+    $reader.ReadLine()
+    $writer.WriteLine('{"id":"2","jsonrpc":"2.0","method":"getjobtemplate","params":null}')
+    $reader.ReadLine()
+} finally {
+    $client.Dispose()
+}
+```
+
+The login response has `"id":"1"` and `"result":"ok"`. A job response or
+asynchronous `job` notification contains `height`, `job_id`, `difficulty` and
+`pre_pow`. The requests and notifications share the same connection, so their
+arrival order can vary. If the node reports that it is syncing, wait for
+synchronization to complete and repeat the check. For another RPC error or a
+timeout, inspect the node and wallet logs. See [Stratum protocol](../stratum.md)
+for details.
+
+## Setup mwc-node to run a miner on a different host
+
+Keep the wallet listener on the node host. Stop the node and change the Stratum
+binding in `~/.mwc/main/mwc-server.toml` to its LAN or VPN address. Replace the
+example `192.168.1.10` with an address assigned to the node host:
+
+```toml
+[server.stratum_mining_config]
+enable_stratum_server = true
+stratum_server_addr = "192.168.1.10:3416"
+wallet_listener_url = "http://127.0.0.1:3415"
+burn_reward = false
+```
+
+Use `0.0.0.0:3416` when listening on all IPv4 interfaces is appropriate for your
+firewall rules. Restart the node with `~/my_mwc_install/mwc/mwc.exe server run`.
+
+#### Validate node from local host
+
+Look for `Stratum server started on 192.168.1.10:3416` in
+`~/.mwc/main/mwc-server.log`. Test the address configured above:
+
+```powershell
+Test-NetConnection -ComputerName 192.168.1.10 -Port 3416
+```
+
+Expect `TcpTestSucceeded: True`.
+If it fails, confirm that this address belongs to the node host, the node was
+restarted with that binding, and the host firewall permits the connection.
+
+#### Obtain my public IP
+
+For a worker on the same LAN or VPN, use the node's LAN or VPN address.
+For an internet connection through port forwarding, obtain the public WAN
+address from the router's status page. Record that address for the worker's
+configuration. If your ISP uses carrier-grade NAT, arrange a reachable public
+address or use a VPN that connects the two hosts.
+
+#### Open port at Windows
+
+In an Administrator PowerShell, allow the worker's source IP to reach TCP
+`3416`. Replace `192.168.1.20` with the worker's LAN, VPN or public source address:
+
+```powershell
+New-NetFirewallRule -DisplayName 'MWC Stratum worker' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3416 -RemoteAddress 192.168.1.20
+```
+
+The returned rule should show `Enabled: True`, `Direction: Inbound` and
+`Action: Allow`. If creation fails, check the reported error and run the command
+in an Administrator PowerShell. Verify reachability from the worker using the
+connection test below.
+
+Keep Windows Firewall enabled. Apply the corresponding rule to any upstream
+firewall or cloud security group. See
+[Microsoft's firewall command guide](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/configure-with-command-line).
+
+#### Do you have a router? Map 3416 port for incoming connections
+
+For an internet connection through a NAT router, forward TCP port `3416` to
+port `3416` at the node's LAN address. Reserve that LAN address in the router's
+DHCP settings so the forwarding rule remains valid. Use your router vendor's
+port-forwarding instructions and restrict the permitted source to the worker
+where supported. LAN and VPN workers connect directly to the corresponding
+node address.
+
+Find the node's LAN address with `Get-NetIPConfiguration` in PowerShell.
+Use the `IPv4Address` shown for the active Ethernet or Wi-Fi adapter.
+
+#### Validate if your port is open for INCOMING connections
+
+Test access from the worker's network. An external
+[port checker](https://www.yougetsignal.com/tools/open-ports/) can also test a
+public forwarding rule. These screenshots illustrate a closed and an open port:
+
+![Example of a closed port](Install_mac_images/port_close.png)
+
+![Example of an open port](Install_mac_images/port_open.png)
+
+A firewall restricted to the worker's source address can reject a public port
+checker's probe. Use the worker-host connection test below to verify the intended
+route. If it fails, check the listener address, firewall rule, forwarding rule
+and public address in that order.
+
+#### Validate stratum connection from your miner's host
+
+On a Windows worker, replace `NODE_IP` with the node's reachable address:
+
+```powershell
+Test-NetConnection -ComputerName NODE_IP -Port 3416
+```
+
+Expect `TcpTestSucceeded: True`. If it is false, check the node's listener,
+firewall and forwarding rules before starting the worker. Repeat the TCP
+protocol check above using `NODE_IP` in place of `127.0.0.1`.
+On a Linux worker, `nc -vz NODE_IP 3416` should report a successful connection;
+if it reports refusal or a timeout, check the same listener and network rules.
+
+Then start the worker and confirm successful login and incoming mining jobs.
+The node's Mining screen shows the worker and its accepted/rejected shares.
+
+#### Node setup is done for remote access
+
+With the connection checks passing, keep the node and wallet listener running
+and configure the worker for the reachable Stratum address.
+
+## MINER
+
+Choose a worker supporting **MWC Cuckatoo31 (C31)** and the MWC Stratum protocol.
+Install the GPU driver and runtime required by that worker on the mining host.
+Choose hardware with enough memory for its C31 solver. Use `127.0.0.1:3416` for
+a local worker, or the node's reachable LAN, VPN or public address for a remote
+worker. The worker name labels its connection in the node's Mining screen;
+the configured wallet listener determines where rewards are received.
+
+#### Mwc miner
+
+The [mwc-miner project](https://github.com/mwcproject/mwc-miner) provides mining
+plugins. Its current Cargo target is `grin-miner`, and its configuration file is
+`grin-miner.toml`. In the existing `[mining]` section, set:
+
+```toml
+[mining]
+stratum_server_addr = "127.0.0.1:3416"
+stratum_server_login = "worker-1"
+stratum_server_password = "x"
+stratum_server_tls_enabled = false
+```
+
+Select a C31 plugin compatible with the mining host, such as
+`cuckatoo_mean_cpu_compat_31` for x86_64 CPU testing, or a C31 CUDA/OpenCL plugin
+for supported hardware. Enable the selected plugin's configuration block and
+keep its dependencies installed on the worker. Run the miner from the directory
+containing `grin-miner.toml`; its configured log path defaults to `grin-miner.log`.
+
+Use a supported Linux worker for the project's reference plugins, or a
+Windows mining worker that supports MWC C31. Point it at this Windows node's
+Stratum address using the remote-worker setup above.
+
+#### GMiner
+
+Use a [GMiner release](https://github.com/develsoftware/GMinerRelease/releases)
+that includes an MWC C31 solver for your GPU. Check that release's `--help` for
+supported algorithms and its required GPU driver. For a release listing
+`mwc31`, run:
+
+```powershell
+./miner.exe --algo mwc31 --server NODE_IP --port 3416 --user worker-1
+```
+
+Replace `NODE_IP` with the address verified above. Check successful login,
+incoming jobs and accepted shares in both the worker and node. Keep the worker's
+connection mode set to plain Stratum TCP for the listener configured here.
+
+## Checking your coins
+
+In another terminal, refresh the wallet balance and list its outputs:
+
+```powershell
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe info
+~/my_mwc_install/mwc-wallet/mwc-wallet.exe outputs
+```
+
+`info` displays the wallet balance, including `Currently Spendable` and, when
+applicable, `Immature Coinbase`. `outputs` lists individual outputs with their
+`Block Height`, `Status` and `Coinbase?` fields. Use these to identify the rewards
+from accepted blocks and check their maturity. If the wallet reports a failed
+node refresh, check the node connection and API credentials before relying on
+the displayed balance.
+
+An accepted **block** earns the coinbase reward; accepted shares show worker
+progress toward finding a block. Newly mined rewards appear as immature outputs
+and become spendable after the consensus maturity period of 1,440 blocks.
+Keep the node synchronized and use the wallet's spendable balance when preparing
+a transfer.

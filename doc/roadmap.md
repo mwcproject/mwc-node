@@ -1,3 +1,5 @@
+> Historical roadmap and distribution record. Dates under “To be done” are past plans, not current commitments. The library model now exists (`node_workflow` and `mwc_node_lib`); consult [code_structure.md](code_structure.md) for implemented components.
+
 The MWC network was launched in November 2019.
 MWC development is progressing well and there are many areas where development resources could be allocated.
 

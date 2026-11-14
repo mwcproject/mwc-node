@@ -1,6 +1,6 @@
 # Mwc Stratum RPC Protocol
 
-*Read this in other languages: [Korean](translations/stratum_KR.md), [简体中文](translations/stratum_ZH-CN.md).*
+*Read this in other languages: [Korean](translations/stratum_KR.md).*
 
 This document describes the current Stratum RPC protocol implemented in Mwc.
 

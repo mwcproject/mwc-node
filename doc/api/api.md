@@ -1,20 +1,41 @@
-# Mwc API Documentation
+# Node APIs
 
-Used to query a node about various information on the blockchain, networks and peers. By default, the API will listen on `localhost:3413`. The API is started as the same time as the Mwc node.
-This endpoint requires, by default, [Basic Authentication](https://en.wikipedia.org/wiki/Basic_access_authentication). The username is `mwc`.
+The node API starts with the server. Default listen addresses are
+`127.0.0.1:3413` on mainnet and `127.0.0.1:13413` on Floonet; configuration can
+override them. The current router is [api/src/handlers.rs](../../api/src/handlers.rs).
 
-## Node API v2
+## Authentication
 
-This API version uses jsonrpc for its requests. It is split up in a foreign API and an owner API. The documentation for these endpoints is automatically generated:
-- [Owner API](https://docs.rs/mwc_api/latest/mwc_api/trait.OwnerRpc.html)
-- [Foreign API](https://docs.rs/mwc_api/latest/mwc_api/trait.ForeignRpc.html)
+HTTP Basic authentication uses a network-dependent username:
 
-Basic auth passwords can be found in `.api_secret`/`.foreign_api_secret` files respectively.
+| Network | Username |
+| --- | --- |
+| Mainnet | `mwcmain` |
+| Floonet | `mwcfloo` |
+| Other/test contexts | `mwc` |
 
-## Node API v1
+The configured `.api_secret` protects owner and Stratum administration routes.
+The separately configured `.foreign_api_secret` protects
+`/v2/foreign`. Middleware is installed when the corresponding secret is
+configured. Use the right secret for the endpoint; do not substitute the
+wallet owner's `.owner_api_secret`.
 
-**Note:** version 1 of the API will be deprecated in v4.0.0 and subsequently removed in v5.0.0. Users of this API are encouraged to upgrade to API v2.
+## JSON-RPC routes
 
-This API uses REST for its requests. To learn about what specific calls can be made read the [node API v1 doc](node_api_v1.md).
+- `/v2/owner`: node administration, chain status and peer management.
+- `/v2/foreign`: wallet-facing chain queries and transaction submission.
+- `/v2/stratum`: Stratum administration API, separate from the miner's Stratum socket.
 
-Basic auth password can be found in `.api_secret`
+The method definitions are in [owner_rpc.rs](../../api/src/owner_rpc.rs),
+[foreign_rpc.rs](../../api/src/foreign_rpc.rs) and
+[stratum_rpc.rs](../../api/src/stratum_rpc.rs). Generate documentation from this
+checkout with `cargo doc --no-deps -p mwc_api` to match the exact implementation.
+Do not assume a separately published `docs.rs/latest` version matches it.
+
+## Embedded calls
+
+An embedding application can initialize the in-process router through
+`init_call_api` and call `process_api_call`; the returned `response` is a string
+containing the route response. The outer C ABI success envelope and inner
+JSON-RPC result/error are distinct. Non-success HTTP status becomes an outer
+error. See the [C ABI specification](../mwc_lib_specification.md).

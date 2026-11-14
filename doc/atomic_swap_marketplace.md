@@ -1,3 +1,5 @@
+> Marketplace design background. Wallet execution belongs to the optional `swaps` feature in the separate mwc-wallet repository, and the default Qt desktop build disables its marketplace UI. This document alone does not establish an available current node API.
+
 # Atomic Swap Marketplace
 
 Atomic Swap Marketplace will use the publisher/subscriber model for message pool maintenance. Mwc-wallets, that are participating in the atomic swap marketpace need to listen for new messages.

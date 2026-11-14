@@ -75,7 +75,7 @@ fn build_router() -> Router {
 	let index_handler = IndexHandler { list: route_list };
 	let mut router = Router::new();
 	router
-		.add_route("/v1/*", Arc::new(index_handler))
+		.add_route("/test/*", Arc::new(index_handler))
 		.expect("add_route failed")
 		.add_middleware(Arc::new(LoggingMiddleware {}));
 	router
@@ -102,7 +102,7 @@ fn test_start_api() {
 	let server_addr = "127.0.0.1:14434";
 	let addr: SocketAddr = server_addr.parse().expect("unable to parse server address");
 	let handle = server.start(addr, router, None).unwrap();
-	let url = format!("http://{}/v1/", server_addr);
+	let url = format!("http://{}/test/", server_addr);
 	let index = request_with_retry(0, url.as_str()).unwrap();
 	assert_eq!(index.len(), 2);
 	assert_eq!(counter.value(), 1);
@@ -173,7 +173,7 @@ fn test_start_api_tls() {
 	let server_addr = "0.0.0.0:14444";
 	let addr: SocketAddr = server_addr.parse().expect("unable to parse server address");
 	assert!(server.start(addr, router, Some(tls_conf)).is_ok());
-	let index = request_with_retry(0, "https://yourdomain.com:14444/v1/").unwrap();
+	let index = request_with_retry(0, "https://yourdomain.com:14444/test/").unwrap();
 	assert_eq!(index.len(), 2);
 	assert!(!server.stop());
 }
@@ -185,7 +185,7 @@ fn request_with_retry(context_id: u32, url: &str) -> Result<Vec<String>, mwc_api
 		match client.get(url) {
 			Ok(res) => {
 				return Ok(serde_json::from_value(res)
-					.map_err(|e| Error::Internal(format!("Failed to parse response, {}", e)))?)
+					.map_err(|e| Error::Internal(format!("Failed to parse response, {}", e)))?);
 			}
 			Err(e) => {
 				if tries > 5 {

@@ -1,3 +1,5 @@
+> Authentication uses the node owner secret and network username (`mwcmain` mainnet, `mwcfloo` Floonet); see [API authentication](api/api.md). The examples here do not imply an unauthenticated endpoint.
+
 # MWC Stratum Server extension for Mining Pool
 
 ## About
@@ -135,7 +137,7 @@ Black list of IPs. Please note, it support only IPs, no masks. Normally you shou
 
 -- This option is removed form 3.2.0 release because mwc-node switched to async model. So there is no reasons to wait. Please migrate to sync/wait model.
 
-## REST API  /v2/stratum
+## JSON-RPC API `/v2/stratum`
 
 If ip_tracking is on, it make sense to check and manipulate with IPs.  This API using the same secret as Node Owner API. API will work with any settings, but 
 real data will be provided only if Stratum server and ip_tracking are active (has 'true' value).

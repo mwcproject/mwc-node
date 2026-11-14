@@ -15,47 +15,15 @@
 
 use super::utils::w;
 use crate::rest::*;
-use crate::router::{Handler, ResponseFuture};
-use crate::types::*;
-use crate::web::*;
-use mwc_core::core::hash::{Hash, Hashed};
+use mwc_core::core::hash::Hash;
 use mwc_core::core::Transaction;
-use mwc_core::ser::{self, ProtocolVersion};
-use mwc_crates::bytes::Bytes;
-use mwc_crates::hyper::{Request, StatusCode};
 use mwc_crates::log::{error, info};
 use mwc_crates::parking_lot::RecursiveRwLock;
-use mwc_crates::secp::{ContextFlag, Secp256k1};
-use mwc_crates::serde::{self, Deserialize, Serialize};
+use mwc_crates::secp::Secp256k1;
 use mwc_pool::{self, BlockChain, PoolAdapter};
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 
 pub const MAX_UNCONFIRMED_TRANSACTIONS: usize = 1_000;
-
-/// Get basic information about the transaction pool.
-/// GET /v1/pool
-pub struct PoolInfoHandler<B, P>
-where
-	B: BlockChain,
-	P: PoolAdapter,
-{
-	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
-}
-
-impl<B, P> Handler for PoolInfoHandler<B, P>
-where
-	B: BlockChain,
-	P: PoolAdapter,
-{
-	fn get(&self, _req: Request<Bytes>) -> ResponseFuture {
-		let pool_arc = w_fut!(&self.tx_pool);
-		let pool = pool_arc.read();
-
-		json_response(&PoolInfo {
-			pool_size: pool.total_size(),
-		})
-	}
-}
 
 pub struct PoolHandler<B, P>
 where
@@ -126,13 +94,6 @@ where
 		Ok(())
 	}
 }
-/// Dummy wrapper for the hex-encoded serialized transaction.
-#[derive(Serialize, Deserialize)]
-#[serde(crate = "serde")]
-struct TxWrapper {
-	tx_hex: String,
-}
-
 fn pool_error_to_api_error(e: mwc_pool::PoolError) -> Error {
 	use mwc_pool::PoolError::*;
 
@@ -157,139 +118,9 @@ fn pool_error_to_api_error(e: mwc_pool::PoolError) -> Error {
 	}
 }
 
-/// Push new transaction to our local transaction pool.
-///
-/// Network relay is best-effort after local acceptance. Adapter failures are
-/// logged by the pool and are not returned from this endpoint.
-/// POST /v1/pool/push_tx
-pub struct PoolPushHandler<B, P>
-where
-	B: BlockChain,
-	P: PoolAdapter,
-{
-	pub tx_pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
-}
-
-fn parse_fluff_param(params: &QueryParams) -> Result<bool, Error> {
-	match params.get("fluff")?.map(|v| v.as_str()) {
-		None => Ok(false),
-		Some("") | Some("true") | Some("1") => Ok(true),
-		Some("false") | Some("0") => Ok(false),
-		Some(_) => Err(Error::RequestError(
-			"invalid value of parameter fluff".to_string(),
-		)),
-	}
-}
-
-async fn update_pool<B, P>(
-	pool: Weak<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
-	req: Request<Bytes>,
-) -> Result<(), Error>
-where
-	B: BlockChain,
-	P: PoolAdapter,
-{
-	let pool = w(&pool)?;
-	let params = QueryParams::from_query(req.uri().query())?;
-	let fluff = parse_fluff_param(&params)?;
-
-	let wrapper: TxWrapper = parse_body(req).await?;
-	let tx_hex_len = wrapper.tx_hex.len();
-	let tx_bin = mwc_util::from_hex(&wrapper.tx_hex).map_err(|e| {
-		Error::RequestError(format!(
-			"Unable to decode transaction hex of length {}, {}",
-			tx_hex_len, e
-		))
-	})?;
-
-	// All wallet api interaction explicitly uses protocol version 1 for now.
-	let version = ProtocolVersion(1);
-	let context_id = pool.read().get_context_id();
-	let tx_bin_len = tx_bin.len();
-	let tx: Transaction = ser::deserialize_strict(&mut &tx_bin[..], version, context_id, true)
-		.map_err(|e| {
-			Error::RequestError(format!(
-				"Unable to deserialize transaction binary of length {}, {}",
-				tx_bin_len, e
-			))
-		})?;
-
-	let tx_hash = tx.hash(context_id)?;
-	let mut secp = Secp256k1::with_caps(ContextFlag::Commit)?;
-	let pool_handler = PoolHandler {
-		tx_pool: Arc::downgrade(&pool),
-	};
-	pool_handler.push_transaction(tx, tx_hash, Some(fluff), &mut secp)
-}
-
-impl<B, P> Handler for PoolPushHandler<B, P>
-where
-	B: BlockChain + 'static,
-	P: PoolAdapter + 'static,
-{
-	fn post(&self, req: Request<Bytes>) -> ResponseFuture {
-		let pool = self.tx_pool.clone();
-		Box::pin(async move {
-			let res = match update_pool(pool, req).await {
-				Ok(_) => just_response(StatusCode::OK, ""),
-				Err(e) => return result_to_response(Err::<(), Error>(e)).await,
-			};
-			Ok(res)
-		})
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-
-	fn parse_fluff(query: Option<&str>) -> Result<bool, Error> {
-		let params = QueryParams::from_query(query)?;
-		parse_fluff_param(&params)
-	}
-
-	#[test]
-	fn push_tx_fluff_defaults_to_stem_phase() {
-		assert!(!parse_fluff(None).unwrap());
-	}
-
-	#[test]
-	fn push_tx_fluff_accepts_presence_flag() {
-		assert!(parse_fluff(Some("fluff")).unwrap());
-		assert!(parse_fluff(Some("fluff=")).unwrap());
-	}
-
-	#[test]
-	fn push_tx_fluff_accepts_boolean_values() {
-		assert!(parse_fluff(Some("fluff=true")).unwrap());
-		assert!(parse_fluff(Some("fluff=1")).unwrap());
-		assert!(!parse_fluff(Some("fluff=false")).unwrap());
-		assert!(!parse_fluff(Some("fluff=0")).unwrap());
-	}
-
-	#[test]
-	fn push_tx_fluff_rejects_invalid_values() {
-		let err = parse_fluff(Some("fluff=garbage")).unwrap_err();
-
-		match err {
-			Error::RequestError(msg) => {
-				assert!(msg.contains("invalid value of parameter fluff"), "{}", msg);
-			}
-			other => panic!("expected request error, got {:?}", other),
-		}
-	}
-
-	#[test]
-	fn push_tx_fluff_rejects_duplicate_values() {
-		let err = parse_fluff(Some("fluff=true&fluff=false")).unwrap_err();
-
-		match err {
-			Error::RequestError(msg) => {
-				assert!(msg.contains("duplicate query parameter fluff"), "{}", msg);
-			}
-			other => panic!("expected request error, got {:?}", other),
-		}
-	}
 
 	#[test]
 	fn mined_transaction_returns_confirmed_request_error() {
