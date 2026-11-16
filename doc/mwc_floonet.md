@@ -1,176 +1,443 @@
-This page will be a guide for running MWC's floonet. We have launched a testnet, known as the floonet (similar to mwc).
-We have two seed servers running at seed1.mwc.mw and seed2.mwc.mw. If you are interested in running a public seed server,
-please contact us. As of now, mwc will only run with the --floonet option. This will change as we come closer to launching
-mainnet. An important thing to note about the floonet is that the reward schedule decreases much faster than mainnet. On
-mainnet, there are 2.1 million blocks (4 years) between block reward halvings. On floonet, there are 2880 blocks (2 days)
-between block reward halvings. The purpose of this it to test that our reward halving schedule works correctly. The downside
-is that there will be no rewards after about 64 days or so when the final halving occurs. The floonet will still work, but
-at that time, we might start a new testnet.
+# Floonet node and wallet setup
 
-# Setting up a full node
-To setup a full node, you must checkout and build the project or you can just download our binaries from our latest release which are hosted here: http://www.github.com/cgilliard/mwc/releases.
+Floonet is MWC's public test network for testing node, wallet and application
+changes with test coins. Use `--floonet` for both the node and wallet commands.
+The examples below use one node and a separate wallet directory on the same
+host.
 
-## Supported Platforms
+The built-in Floonet seed list includes `seed1.mwc.mw`, `seed2.mwc.mw`, IP
+addresses and Tor peers. The node uses these to discover peers automatically.
+See [the seed list](../core/src/global.rs) and the generated configuration for
+peer settings. To offer a public seed, keep a synchronized node reachable on
+its P2P port and coordinate inclusion with the project maintainers.
 
-Longer term, most platforms will likely be supported to some extent.
-MWC's programming language `rust` has build targets for most platforms.
+Floonet accelerates the early reward transitions to exercise the reward
+schedule. The current subsidy changes are defined by block height:
 
-What's working so far?
+| First block of the period | Subsidy per block |
+| --- | --- |
+| 1 | 2.380952380 MWC |
+| 271,440 | 0.6 MWC |
+| 272,880 | 0.45 MWC |
+| 274,320 | 0.3 MWC |
 
-* Linux x86\_64 and macOS [MWC + mining + development]
-* Not Windows 10 yet
+The 0.6 and 0.45 MWC periods each last 1,440 blocks on Floonet; on mainnet they
+last 120 and 60 days' worth of blocks. Later periods have longer durations.
+Use `calc_mwc_block_reward`, `get_epoch_block_offset` and `get_epoch_duration`
+in [the consensus implementation](../core/src/consensus.rs) for the complete
+schedule. A mined block's reward includes its subsidy plus transaction fees;
+fees remain available after the subsidy schedule ends.
 
-## Requirements (only needed to build if you are downloading binaries you can skip this section)
+## Setting up a full node
 
-* rust 1.31+ (use [rustup]((https://www.rustup.rs/))- i.e. `curl https://sh.rustup.rs -sSf | sh; source $HOME/.cargo/env`)
-  * if rust is already installed, you can simply update version with `rustup update`
-* clang
-* ncurses and libs (ncurses, ncursesw5)
-* zlib libs (zlib1g-dev or zlib-devel)
-* pkg-config
-* libssl-dev
-* linux-headers (reported needed on Alpine linux)
-* llvm
+Use matching node and wallet releases from
+[mwc-node releases](https://github.com/mwcproject/mwc-node/releases) and
+[mwc-wallet releases](https://github.com/mwcproject/mwc-wallet/releases), or
+build compatible source revisions using the steps below.
 
-For Debian-based distributions (Debian, Ubuntu, Mint, etc), all in one line (except Rust):
+### Supported Platforms
+
+The node and wallet support Linux, macOS and Windows. Choose binaries matching
+your OS and CPU architecture. Mining workers have their own hardware and
+platform requirements; select a worker with an MWC C31 solver.
+
+The command examples here use a Linux/macOS shell. For platform installation,
+archive checks and runtime libraries, see the [Linux](mining/install_linux.md),
+[macOS](mining/Install_mac.md) and [Windows](mining/install_windows.md) guides.
+Use the Floonet ports and `--floonet` commands from this page.
+
+### Requirements (building from source)
+
+Install stable Rust using [rustup](https://rustup.rs). Update an existing Rust
+installation with:
 
 ```sh
-apt install build-essential cmake git libgit2-dev clang libncurses5-dev libncursesw5-dev zlib1g-dev pkg-config libssl-dev llvm
+# Update the compiler and Cargo used for the source build.
+rustup update stable
 ```
 
-There are similar packages available for centos as well but they might have a slightly different name.
-
-For Mac (Only necessary if you plan to build, if you are downloading binaries skip):
+On Debian-based distributions, install the native build tools and libraries:
 
 ```sh
+# GCC/G++, Make, CMake, pkg-config, and development libraries for the node.
+sudo apt update
+sudo apt install build-essential cmake git curl pkg-config libncurses-dev zlib1g-dev
+```
+
+The standalone node's terminal UI uses curses. On other Linux distributions,
+install the corresponding development packages for the same tools and libraries.
+
+On macOS, use Apple Clang and the Homebrew build dependencies:
+
+```sh
+# Install Apple's compiler, SDK and command-line tools.
 xcode-select --install
-brew install pkg-config
-brew install openssl
+
+# Install CMake, pkg-config and liblzma.
+brew install cmake pkg-config xz
 ```
 
-## Build steps (If you are downloading binary, skip this step)
+For Windows source builds, use the MSVC Rust toolchain, Visual Studio's C++
+build tools and Windows SDK; see the Windows installation guide above.
+[Build and run](build.md) has further node build details.
+
+### Build steps (building from source)
+
+For new source checkouts, keep the node and wallet repositories side by side.
+The wallet's local dependency paths refer to the sibling `mwc-node` directory.
+For existing checkouts, run the build commands in those directories.
 
 ```sh
-git clone https://github.com/cgilliard/mwc.git
-cd mwc
+# Create a directory for the two source repositories.
+mkdir -p ~/mwc-dev
+cd ~/mwc-dev
+git clone https://github.com/mwcproject/mwc-node.git
+git clone https://github.com/mwcproject/mwc-wallet.git
+
+# Build the standalone node.
+cd ~/mwc-dev/mwc-node
 cargo build --release
+
+# Build the standalone wallet.
+cd ~/mwc-dev/mwc-wallet
+cargo build --release
+
+# Make both executables available in this terminal.
+export PATH="$HOME/mwc-dev/mwc-node/target/release:$HOME/mwc-dev/mwc-wallet/target/release:$PATH"
 ```
 
-MWC can also be built in debug mode (without the `--release` flag, but using the `--debug` or the `--verbose` flag) but this will render fast sync prohibitively slow due to the large overhead of cryptographic operations.
+Successful builds produce `mwc-node/target/release/mwc` and
+`mwc-wallet/target/release/mwc-wallet` (`.exe` on Windows). Use release builds
+for synchronization and normal operation; cryptographic validation is much
+slower in debug builds.
 
-A successful build gets you:
+### Make the executables available
 
-* `target/release/mwc` - the main mwc binary
-
-If you have downloaded binary, the package will contain the mwc binary only for your specfic platform.
-
-All data, configuration and log files created and used by mwc are located in the hidden
-`~/.mwc` directory (under your user home directory) by default. You can modify all configuration
-values by editing the file `~/.mwc/main/mwc-server.toml`.
-
-It is also possible to have mwc create its data files in the current directory. To do this, run
+Run the appropriate `PATH` command in each terminal used in this walkthrough.
+For source builds, use the export above. For release archives extracted as in
+the installation guides:
 
 ```sh
+# Adapt these directories if you extracted the releases elsewhere.
+export PATH="$HOME/my_mwc_install/mwc:$HOME/my_mwc_install/mwc-wallet:$PATH"
+
+# Each command should print the installed program's version.
+mwc --version
+mwc-wallet --version
+```
+
+Check that the versions match the releases or source revisions you selected.
+If a command is missing, correct `PATH`. Resolve any loader or library error
+using the platform installation guide before proceeding.
+
+### Configure and start the node
+
+By default, Floonet configuration, data and logs live under `~/.mwc/floo`.
+For this walkthrough, generate a configuration in a dedicated directory:
+
+```sh
+# Keep this node's configuration, chain database and logs together.
+mkdir -p ~/mwc-floonet/node
+cd ~/mwc-floonet/node
+
+# First run only: create mwc-server.toml with paths rooted in this directory.
 mwc --floonet server config
-```
-Which will generate a `mwc-server.toml` file in the current directory, pre-configured to use
-the current directory for all of its data. Running mwc from a directory that contains a
-`mwc-server.toml` file will use the values in that file instead of the default
-`~/.mwc/floo/mwc-server.toml`.
 
-While testing, put the mwc binary on your path like this:
+# Start the node and leave this terminal running.
+mwc --floonet server run
+```
+
+The configuration command reports that it created `mwc-server.toml`.
+The node reads that file from its working directory and creates `chain_data`,
+its API credential files and `mwc-server.log` there. For later starts, return
+to the same directory and run `mwc --floonet server run`.
+
+These are the Floonet ports used throughout this page:
+
+| Service | Address or port |
+| --- | --- |
+| Node API | `127.0.0.1:13413` |
+| P2P | TCP `13414` |
+| Wallet foreign API, when enabled below | `127.0.0.1:13415` |
+| Node Stratum server, when enabled below | `127.0.0.1:13416` |
+| Wallet owner API | `127.0.0.1:13420` |
+
+Wait for `Current Status: Running`, then check that the validated chain height
+has caught up with the header chain and connected peers. Keep the node running
+while using the wallet. If synchronization stalls, follow
+[Chain synchronization](chain/chain_sync.md).
+
+For custom seed peers, edit `[server.p2p_config]` in the generated configuration.
+Use `seeding_type = "List"` with `seeds` containing reachable Floonet peers in
+`IP:13414` form, then restart the node. The generated comments describe the
+available peer options. See [Tor configuration](tor_inbound_feature.md) for
+onion peers and [API authentication](api/api.md) for node API access.
+
+## Running a wallet
+
+### Initialize the wallet and connect it to the node
+
+In another terminal, initialize the wallet in its own directory:
 
 ```sh
-export PATH=`pwd`/target/release:$PATH
+# Create the wallet configuration and data in this directory.
+mkdir -p ~/mwc-floonet/wallet
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet init --here
+
+# Give the wallet the running node's foreign API credential.
+cp ~/mwc-floonet/node/.foreign_api_secret .foreign_api_secret
+chmod 600 .foreign_api_secret
 ```
 
-assuming you are running from the root directory of your MWC installation.
+Follow the password prompts and store the generated recovery phrase securely.
+Initialization creates `mwc-wallet.toml` and `wallet_data/wallet.seed`.
 
-You can then run `mwc` directly (try `mwc help` for more options).
+The generated `[wallet]` section uses the local Floonet node:
 
-Now that your full node is installed, you can start it on the floonet by running the following command:
+```toml
+[wallet]
+check_node_api_http_addr = "http://127.0.0.1:13413"
+```
+
+Keep its generated absolute `node_api_secret_path`, which points to the
+`.foreign_api_secret` file copied into the wallet directory. If the node's
+credential changes, copy its updated file again. For a different node, update
+the URL and obtain its foreign API credential from its operator.
+
+Run wallet commands from this directory so they load this wallet's configuration:
 
 ```sh
-mwc --floonet
+# Refresh wallet state from the node and show the balance.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet info
 ```
 
-This will start your full node and you will automatically connect to our seed servers. You can see the mwc-server.toml file
-for details on how to configure with different seed servers.
+Expect a wallet summary with the refreshed block height and `Currently
+Spendable` balance. A new wallet starts with zero funds. If the wallet reports
+that it could not validate against the node, check that the node is running,
+the API address is correct and the copied secret matches.
 
-# Running a wallet
+### Obtain test coins
 
-To initialize your wallet run the following commands:
+Use the Floonet faucet to fund the wallet initialized above. Keep your Floonet
+node running and synchronized, then run:
 
 ```sh
-# mkdir mywallet
-# cd mywallet
-# mwc --floonet wallet init -h
+# Request 3 test MWC; the command accepts up to 5 MWC per request.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet faucet_request --amount 3
+
+# Refresh the balance after the transaction reaches the chain.
+mwc-wallet --floonet info
 ```
 
-Because your wallet is running in a different directory from your floo node, you will need to copy the .api_secret file from the floo directory to your wallet's directory so that it can connect to your node. If you do not do this, you might see a message warning that your wallet was not able to verify data against the live chain.
+Enter the wallet password when prompted. `--amount` accepts decimal amounts,
+such as `1.2`, up to **5 MWC** per request; omitting it requests **3 MWC**.
+The command starts the MWCMQS listener, sends the request to the Floonet
+faucet, then finalizes and posts the returned transaction automatically.
+
+Expect `Command 'faucet_request' completed successfully`. The `info` command
+refreshes the balance and shows the received funds as awaiting confirmation or
+confirmed, depending on chain progress. Run `mwc-wallet --floonet info` again
+after new blocks arrive to see the confirmation status update.
+
+The faucet may need a few minutes to synchronize after being idle. If the
+request fails, wait a couple of minutes and retry. For an extended outage,
+contact a moderator in the `#developers` channel on
+[MWC Discord](https://discord.gg/n5dZaty).
+The wallet's [Floonet faucet guide](https://github.com/mwcproject/mwc-wallet/blob/master/doc/floonet_faucet.md)
+also explains how to return test coins when you have finished testing.
+
+### Send, receive and finalize a transaction
+
+These steps exchange encrypted Slatepack files between two Floonet wallets.
+The sender needs sufficient spendable funds for the amount plus the fee.
+The CLI's default input confirmation threshold is 10 blocks.
+
+First, the receiver displays its address and gives it to the sender:
 
 ```sh
-# cp ~/.mwc/floo/.api_secret .
+# Receiver: run in the receiving wallet's directory.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet address
 ```
 
-This will initialize your wallet in the local directory. Whenever you run this wallet you must execute it from that directory.
-
-To check balance, run the following command:
+Use the receiver's Tor/Ed25519 address for Slatepack encryption. On the sender's
+machine, replace the address placeholder before running:
 
 ```sh
-# mwc --floonet wallet info
+# Sender: create a Slatepack sending 1 test MWC to the receiver.
+cd ~/mwc-floonet/wallet
+FLOONET_RECIPIENT='REPLACE_WITH_RECEIVER_ADDRESS'
+mwc-wallet --floonet send --method slatepack \
+  --slatepack_recipient "$FLOONET_RECIPIENT" --dest tx.slatepack 1
 ```
 
-If you join the floonet, let us know and we will send you coins to test with.
-
-To send coins, run the following command:
+Expect `tx.slatepack` in the sender's wallet directory. Transfer that file to
+the receiver, who places it in their wallet directory and runs:
 
 ```sh
-# mwc --floonet wallet send -m file -d tx.tx <amount>
+# Receiver: sign the incoming Slatepack and save a response file.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet receive --file tx.slatepack --outfile tx.response.slatepack
 ```
-This will generate an output file called tx.tx. Transfer this file to the receipient who will run the following command with
-tx.tx in the present working directory.
+
+Expect `tx.response.slatepack`. Return it to the sender, who saves it in their
+wallet directory and finalizes:
 
 ```sh
-# mwc --floonet wallet receive -i tx.tx
+# Sender: finalize the returned response and broadcast the transaction.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet finalize --file tx.response.slatepack
 ```
-This command will genearte an output file called tx.tx.response. The sender will then finalize the transaction by running the
-following command:
+
+On success, the transaction is posted to the node for inclusion in a block.
+After confirmation, both parties refresh their wallets:
 
 ```sh
-# mwc --floonet wallet finalize -i tx.tx.response
+# Sender and receiver: refresh balances and inspect transaction status.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet info
+mwc-wallet --floonet txs
 ```
 
-You can then confirm balances with the info command.
+The receiver's balance should include the received amount; the sender's balance
+reflects the payment and fee. `txs` shows the corresponding transaction and
+confirmation status. If a step reports an error, resolve it before proceeding
+to the next step. For signing with an offline wallet, see
+[the offline workflow](offline_wallet.md).
+
+## Web wallet
+
+For a browser wallet integration, use a frontend compatible with the current
+`mwc-wallet` owner API. Start the authenticated API backend for this test wallet:
 
 ```sh
-# mwc --floonet wallet info
+# Wallet terminal: expose the local owner API for the browser frontend.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet owner_api
 ```
 
-# Web wallet
+Expect an owner API startup message for `127.0.0.1:13420`, followed by the
+process remaining active. A binding error means another process is using the
+port; stop that instance or configure a distinct `owner_api_listen_port`.
 
-Mwc web wallet is compatible with MWC. You can check how set it up [here](https://github.com/cgilliard/mwc/blob/master/doc/web-wallet.md).
+Run the frontend separately and configure it to use
+`http://127.0.0.1:13420/v3/owner`. Keep `api_secret_path` configured: the generated
+`.owner_api_secret` supplies the HTTP Basic authentication password, with
+username `mwc`. A v3 client also performs `init_secure_api` and encrypts its
+subsequent API requests. See the wallet's
+[v3 owner API example](https://github.com/mwcproject/mwc-wallet/tree/master/doc/samples/v3_api_node)
+for the handshake and client configuration.
 
-# Mining
+Use the frontend's connection check to confirm it can authenticate, open the
+Floonet wallet and retrieve its balance. Stop the owner API with Ctrl+C when
+finished with this optional setup.
 
-To mine mwc, you will need to download and build the mwc miner. It is 100% compatible with mwc. The repository is here:
-http://www.github.com/mimblewimble/mwc-miner. Check out the project and build following the instructions in the repository.
+## Mining
 
-To allow mining you must first enable mining on your full node by editing the following line in your mwc-server.toml file:
+Use an MWC Cuckatoo31 worker compatible with the mining host. Obtain the worker
+from [mwc-miner](https://github.com/mwcproject/mwc-miner), or use another worker
+supporting MWC C31 and its Stratum protocol. The platform installation guides
+linked above cover worker dependencies and plugin selection.
 
-enable_stratum_server = false
+### Enable the wallet's mining listener
 
-Change it to:
+In the existing `[wallet]` section of
+`~/mwc-floonet/wallet/mwc-wallet.toml`, set these values and retain the other
+generated settings:
 
+```toml
+[wallet]
+api_listen_interface = "127.0.0.1"
+api_listen_port = 13415
+check_node_api_http_addr = "http://127.0.0.1:13413"
+```
+
+Start the socket listener and enter the wallet password:
+
+```sh
+# Wallet terminal: keep the listener running while mining.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet listen --no_tor
+```
+
+From another terminal, check that the configured socket serves the foreign API:
+
+```sh
+# Expect result.Ok with foreign_api_version and supported_slate_versions.
+curl -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"check_version","params":[]}' \
+  http://127.0.0.1:13415/v2/foreign
+```
+
+If the connection fails, check the listener process and its interface/port
+settings. For an API error, use its message and `mwc-wallet.log` to identify
+the cause. The node uses this listener to create coinbase reward outputs.
+
+### Enable Stratum on the node
+
+Stop the node using its terminal UI's Quit action. Update the existing
+`[server.stratum_mining_config]` section in
+`~/mwc-floonet/node/mwc-server.toml`:
+
+```toml
+[server.stratum_mining_config]
 enable_stratum_server = true
-
-You must also start a wallet listener with the following command:
-
-```sh
-mwc --floonet wallet listen
+stratum_server_addr = "127.0.0.1:13416"
+wallet_listener_url = "http://127.0.0.1:13415"
+burn_reward = false
 ```
 
-Now you will be able to mine by starting your mwc miner with the mwc-miner binary that you have built. Note that by default mwc miner will try to connect on port 3416. For the floonet, you will need to change that parameter to 13416. The line in mwc-miner.toml will look like this:
+Restart the node while the wallet listener remains running:
 
+```sh
+# Node terminal: load the updated mining configuration.
+cd ~/mwc-floonet/node
+mwc --floonet server run
+```
+
+Expect `Stratum server started on 127.0.0.1:13416` in `mwc-server.log` for this
+run. The node serves jobs after synchronization and a successful coinbase
+request to the wallet. If mining startup fails, check the node and wallet log
+entries for the reported address, connection or coinbase error.
+
+### Configure and run the worker
+
+For the reference `mwc-miner`, update the existing `[mining]` section in
+`grin-miner.toml`:
+
+```toml
+[mining]
 stratum_server_addr = "127.0.0.1:13416"
+stratum_server_login = "floonet-worker"
+stratum_server_password = "x"
+stratum_server_tls_enabled = false
+```
 
+Enable a C31 plugin appropriate for your hardware. For a built reference miner
+at `~/mwc-miner`, start it from the directory containing its configuration:
+
+```sh
+# Worker terminal: use the reference miner's executable and Floonet settings.
+cd ~/mwc-miner
+./target/release/grin-miner
+```
+
+Expect the worker to log in, receive jobs and appear as `floonet-worker` in the
+node's Mining screen. Accepted shares indicate valid submitted work. When the
+node accepts a mined block, the configured wallet receives its coinbase reward.
+
+```sh
+# Refresh rewards and inspect coinbase output status.
+cd ~/mwc-floonet/wallet
+mwc-wallet --floonet info
+mwc-wallet --floonet outputs
+```
+
+`info` shows the reward under `Immature Coinbase` until it matures;
+`outputs` identifies it through its `Coinbase?`, `Block Height` and `Status`
+fields. Floonet coinbase maturity is 1,440 blocks. For a worker on another
+host, use the installation guides' remote-worker steps with Floonet Stratum
+port `13416`. See [Stratum protocol](stratum.md) for job and submission details.

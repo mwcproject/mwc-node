@@ -1,86 +1,49 @@
-# Overview #
+# Offline wallet transactions
 
-Given the nature of MWC, given it's limited supply, it will be important to be able to properly secure coins. Currently in
-mwc, there is no way that we are aware of to send funds from an offline wallet. We are not aware of a way to do this in
-Beam either. We have implemented new function in the MWC wallet called "submit". It submits a transaction to the network
-that has been finalized on an offline node. This will enable both sending and receiving funds with an offline airgapped
-wallet. We felt this was a necessity for users to be able to securely store their funds in MWC.
+Wallet commands belong to the separate **mwc-wallet** executable. `mwc` is the
+node. The Qt desktop wallet also provides Cold Wallet and Online Node modes;
+see its [cold-wallet guide](https://github.com/mwcproject/mwc-qt-wallet/blob/master/DOC/cold_wallet.md)
+for snapshot export/import and `.mwctx` publication through the GUI.
 
-# Lifecycle of an offline, secure wallet #
+An offline wallet needs chain data from an online node on the same network to
+select unspent outputs and later see confirmations. Stop a node before copying
+its database; do not copy a live LMDB/txhashset directory piecemeal. Use the
+Qt snapshot workflow or a complete, compatible stopped-node data copy.
+Keep the signing machine disconnected and never move its seed to the online node.
 
-In order to create an offline MWC wallet, the first step is boot up from a live CD. One option is Ubuntu live cd which can
-be found here: https://help.ubuntu.com/community/LiveCD.
+## CLI workflow
 
-You will most likely want to use a USB stick instead of an actual CDROM. You will also need a second USB stick to transfer
-files to and from your offline install. Make sure to never enable networking on your LiveCD install to ensure the top level
-of security.
+1. Create a dedicated offline node configuration with `mwc server config`.
+   Supply compatible chain data and start it with `mwc server --offline run`.
+   Check configured bind addresses and keep the host network isolated.
+2. Initialize a wallet in a dedicated directory with `mwc-wallet init --here`.
+   (`init -h` is its short form; `init --help` displays help.) Configure the
+   wallet to use the local node and its foreign API secret.
+3. Exchange transaction Slatepacks/files with the other wallet. Sending creates
+   an initial slate; receiving adds the recipient's contribution and returns
+   a response to the sender.
+4. On the offline sender, finalize the response without publishing:
 
-First step after installing your new OS is to copy the MWC binary to the USB stick. Plug the USB stick into your offline
-computer and copy mwc to the local file system and add it to your path. Run the following command to setup an offline full
-node:
+   ```sh
+   mwc-wallet finalize --file response.slatepack --nopost
+   ```
 
-```
-# mkdir offline_node
-# cd offline_node
-# mwc server config
-```
+5. Transfer the resulting binary transaction from the wallet's
+   `wallet_data/saved_txs/<uuid>.mwctx` to the online machine. A configured online
+   wallet can publish it to its node with:
 
-This will setup a full node in that directory. Next you will need copy the chain_data directory from a fully synced full node
-over to your offline node. The chain data can be found in ~/.mwc/main/chain_data/ (or floo directory for floonet) by default
-and should be copied into the offline_node/chain_data directory. You will need to use a USB stick to do this.
+   ```sh
+   mwc-wallet submit --input transaction.mwctx
+   ```
 
-Next you will need to setup a wallet. Run the following commands:
+   `submit` accepts a binary `.mwctx`; `post` accepts a finalized slate. Do not
+   substitute one format for the other.
 
-```
-# cd offline_node
-# mwc-wallet init -h
-```
+6. After mining, refresh the offline node's chain data and scan/update the
+   offline wallet to see confirmations. Publishing successfully is not a
+   confirmation that the transaction has been included in a block.
 
-This will initialize your wallet in the same directory as your offline full node. At this point, you can now receive
-transactions via file. See our floonet page on how to do that:
-https://github.com/cgilliard/mwc/blob/master/doc/mwc_floonet.md. You will need to transfer the transaction files via USB
-stick to and from the offline computer.
-
-Up until this point, all of this was possible in mwc, but the problem arises when you submit the transaction to the network
-from an offline node. The last step is the "finalize" command and that both signs the transaction and submits to the network.
-The next section will describe a new function we created called the "submit" function which is checked the git repository.
-
-Before you call the submit function, you need to call finalize on your offline node as described on the other wiki page. This
-will create a file in your offline_node/wallet_data/saved_txs/ directory copy this transaction file from your offline node
-to any online node to "submit" it. The next section explains how the "submit" command works.
-
-# Submit wallet function #
-
-We added a new command to the mwc wallet. Here's the help message for it:
-
-```
-# mwc-wallet submit --help
-mwc-wallet-submit 
-Submits a transaction that has already been finalized but not submitted to the network yet
-
-USAGE:
-    mwc wallet submit [FLAGS] [OPTIONS]
-
-FLAGS:
-    -f, --fluff      Fluff the transaction (ignore Dandelion relay protocol)
-    -h, --help       Prints help information
-    -V, --version    Prints version information
-
-OPTIONS:
-    -i, --input <input>    Transaction file to submit
-```
-
-The command should be fairly self explanitory. You copy the transaction file which was created in the last section over to
-your online node and run the sumbit command to submit. For example:
-
-```
-# mwc-wallet submit -i 856854b4-d9b7-4639-a47a-2edc0f5cf8ab.mwctx
-```
-
-This will send this transaction to the network without requiring your offline node to connect to the internet.
-
-# Summary and conclusion #
-
-As we mentioned in the begining since MWC has a limited supply, the secure storage of coins is important. The submit function,
-which we implemented will enable offline nodes to send and recieve transactions. This will also likely be enabled in our GUI
-based wallet which is under development, as security is a priority.
+Add `--floonet` before subcommands consistently for test-network wallets/nodes.
+Use each CLI's help and the wallet's
+[setup guide](https://github.com/mwcproject/mwc-wallet/blob/master/doc/setup.md)
+for the exact configuration of that checkout.

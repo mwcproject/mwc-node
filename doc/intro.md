@@ -1,6 +1,6 @@
 # Introduction to Mimblewimble and MWC
 
-*Read this in other languages: [简体中文](translations/intro_ZH-CN.md), [Español](translations/intro_ES.md), [Nederlands](translations/intro_NL.md), [Русский](translations/intro_RU.md), [日本語](translations/intro_JP.md), [Deutsch](translations/intro_DE.md), [Portuguese](translations/intro_PT-BR.md), [Korean](translations/intro_KR.md).*
+*Read this in other languages: [简体中文](translations/intro_ZH-CN.md), [Español](translations/intro_ES.md), [Nederlands](translations/intro_NL.md), [Русский](translations/intro_RU.md), [日本語](translations/intro_JP.md), [Deutsch](translations/intro_DE.md), [Portuguese](translations/intro_PT-BR.md).*
 
 
 Mimblewimble is a blockchain format and protocol that provides

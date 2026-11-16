@@ -14,14 +14,10 @@
 // limitations under the License.
 use super::utils::{get_output, w};
 use crate::rest::*;
-use crate::router::{Handler, ResponseFuture};
 use crate::types::*;
-use crate::web::*;
 use mwc_core::core::hash::Hash;
 use mwc_core::core::hash::Hashed;
 use mwc_core::core::BlockHeader;
-use mwc_crates::bytes::Bytes;
-use mwc_crates::hyper::{Request, StatusCode};
 use std::sync::Weak;
 
 /// Maximum number of full blocks returned by a single get_blocks request.
@@ -30,143 +26,13 @@ use std::sync::Weak;
 /// are requested, so the response cost scales with both block count and block
 /// contents. Callers can paginate via `last_retrieved_height`.
 pub const BLOCK_TRANSFER_LIMIT: u64 = 10;
-const MAX_U64_DECIMAL_LEN: usize = 20;
-const INVALID_INPUT_PREVIEW_CHARS: usize = 80;
-
-#[derive(Debug, PartialEq, Eq)]
-struct BlockQueryOptions {
-	compact: bool,
-	include_proof: bool,
-	include_merkle_proof: bool,
-}
-
-impl Default for BlockQueryOptions {
-	fn default() -> Self {
-		BlockQueryOptions {
-			compact: false,
-			include_proof: false,
-			include_merkle_proof: true,
-		}
-	}
-}
-
-fn parse_canonical_height(input: &str) -> Option<u64> {
-	if input == "0"
-		|| (input.len() <= MAX_U64_DECIMAL_LEN
-			&& !input.starts_with('0')
-			&& input.bytes().all(|b| b.is_ascii_digit()))
-	{
-		input.parse().ok()
-	} else {
-		None
-	}
-}
-
-fn invalid_hash_or_height(input: &str, err: impl std::fmt::Display) -> Error {
-	let mut chars = input.chars();
-	let preview = chars
-		.by_ref()
-		.take(INVALID_INPUT_PREVIEW_CHARS)
-		.collect::<String>();
-	let truncated = if chars.next().is_some() {
-		" (truncated)"
-	} else {
-		""
-	};
-
-	Error::Argument(format!(
-		"Not a valid hash or height value (len {}, preview {:?}{}), {}",
-		input.len(),
-		preview,
-		truncated,
-		err
-	))
-}
-
-fn parse_block_query(params: Option<&str>) -> Result<BlockQueryOptions, Error> {
-	let mut options = BlockQueryOptions::default();
-	let query = QueryParams::from_query(params)?;
-
-	for param in query.names() {
-		match param {
-			"compact" => options.compact = true,
-			"no_merkle_proof" => options.include_merkle_proof = false,
-			"include_proof" => options.include_proof = true,
-			_ => {
-				return Err(Error::RequestError(format!(
-					"unsupported query parameter: {}",
-					param
-				)));
-			}
-		}
-	}
-
-	Ok(options)
-}
-
 /// Gets block headers given either a hash or height or an output commit.
-/// GET /v1/headers/<hash>
-/// GET /v1/headers/<height>
-/// GET /v1/headers/<output commit>
 ///
 pub struct HeaderHandler {
 	pub chain: Weak<mwc_chain::Chain>,
 }
 
 impl HeaderHandler {
-	fn get_header(&self, input: String) -> Result<BlockHeaderPrintable, Error> {
-		// will fail quick if the provided isn't a commitment
-		match self.get_header_for_output(input.clone()) {
-			Ok(Some(h)) => return Ok(h),
-			Ok(None) => {}
-			// Expected commitment probe failures. Continue parsing the input as
-			// a height or hash, but do not hide internal or chain-read errors.
-			Err(Error::Argument(_)) | Err(Error::SecpError(_)) => {}
-			Err(e) => return Err(e),
-		}
-		if let Some(height) = parse_canonical_height(&input) {
-			match w(&self.chain)?.get_body_header_by_height(height) {
-				Ok(header) => return Ok(BlockHeaderPrintable::from_header(&header)?),
-				Err(e) => {
-					let msg = format!("Header for height {}, {}", height, e);
-					return Err(Error::chain_read_error(e, msg));
-				}
-			}
-		}
-		let h = Hash::from_hex(&input).map_err(|e| invalid_hash_or_height(&input, e))?;
-		let chain = w(&self.chain)?;
-		let header = chain.get_block_header(&h).map_err(|e| {
-			let msg = format!("Block header for hash {}, {}", h, e);
-			Error::chain_read_error(e, msg)
-		})?;
-		let actual_hash = header.hash(chain.get_context_id())?;
-		if actual_hash != h {
-			return Err(mwc_chain::Error::InvalidPersistedChainState(format!(
-				"block header record key/hash mismatch: requested {}, loaded {}",
-				h, actual_hash
-			))
-			.into());
-		}
-		Ok(BlockHeaderPrintable::from_header(&header)?)
-	}
-
-	fn get_header_for_output(
-		&self,
-		commit_id: String,
-	) -> Result<Option<BlockHeaderPrintable>, Error> {
-		let oid = match get_output(&self.chain, &commit_id)? {
-			Some((_, o)) => o,
-			None => return Ok(None),
-		};
-		match w(&self.chain)?.get_header_for_output(oid.commitment()) {
-			Ok(header) => Ok(Some(BlockHeaderPrintable::from_header(&header)?)),
-			Err(e) => {
-				let msg = format!("Header for output {}, {}", commit_id, e);
-				Err(Error::chain_read_error(e, msg))
-			}
-		}
-	}
-
 	pub fn get_header_v2(&self, h: &Hash) -> Result<BlockHeaderPrintable, Error> {
 		let chain = w(&self.chain)?;
 		let header = chain.get_block_header(h).map_err(|e| {
@@ -223,25 +89,7 @@ impl HeaderHandler {
 	}
 }
 
-impl Handler for HeaderHandler {
-	fn get(&self, req: Request<Bytes>) -> ResponseFuture {
-		let el = right_path_element!(req);
-		result_to_response(self.get_header(el.to_string()))
-	}
-}
-
-/// Gets block details given either a hash or an unspent commit
-/// GET /v1/blocks/<hash>
-/// GET /v1/blocks/<height>
-/// GET /v1/blocks/<commit>
-///
-/// Optionally return results as "compact blocks" by passing "?compact" query
-/// param GET /v1/blocks/<hash>?compact
-///
-/// Optionally turn off the Merkle proof extraction by passing "?no_merkle_proof" query
-/// param GET /v1/blocks/<hash>?no_merkle_proof
-///
-/// Included proofs describe the node's current output PMMR state. For a
+/// Get block details. Included proofs describe the node's current output PMMR state. For a
 /// historical block response they do not verify against the block header in
 /// that response; consumers must use a root matching each proof's `mmr_size`.
 pub struct BlockHandler {
@@ -371,51 +219,6 @@ impl BlockHandler {
 		})
 	}
 
-	fn get_compact_block(
-		&self,
-		h: &Hash,
-		include_merkle_proof: bool,
-	) -> Result<CompactBlockPrintable, Error> {
-		let chain = w(&self.chain)?;
-		chain.with_output_read_snapshot(|snapshot| {
-			let header = snapshot.get_block_header(h).map_err(|e| {
-				let msg = format!("Block header for hash {}, {}", h, e);
-				Error::chain_read_error(e, msg)
-			})?;
-			let block = snapshot.get_block_for_header(&header).map_err(|e| {
-				let msg = format!("Block for hash {}, {}", h, e);
-				Error::chain_read_error(e, msg)
-			})?;
-			CompactBlockPrintable::from_compact_block_snapshot(
-				&mwc_core::core::CompactBlock::from(block).map_err(|e| {
-					Error::Internal(format!("Unable to build a CompactBlock, {}", e))
-				})?,
-				snapshot,
-				include_merkle_proof,
-			)
-			.map_err(|e| {
-				Error::Internal(format!(
-					"chain error, broken compact block for hash {}, {}",
-					h, e
-				))
-			})
-		})
-	}
-
-	// Try to decode the string as a height or a hash.
-	fn parse_input(&self, input: String) -> Result<Hash, Error> {
-		if let Some(height) = parse_canonical_height(&input) {
-			match w(&self.chain)?.get_body_header_by_height(height) {
-				Ok(header) => return Ok(header.hash(w(&self.chain)?.get_context_id())?),
-				Err(e) => {
-					let msg = format!("Header for height {}, {}", height, e);
-					return Err(Error::chain_read_error(e, msg));
-				}
-			}
-		}
-		Hash::from_hex(&input).map_err(|e| invalid_hash_or_height(&input, e))
-	}
-
 	// Try to get hash from height, hash or output commit
 	pub fn parse_inputs(
 		&self,
@@ -452,33 +255,6 @@ impl BlockHandler {
 			"not a valid hash {:?}, height {:?} or output commit {:?}",
 			hash, height, commit
 		)))
-	}
-}
-
-impl Handler for BlockHandler {
-	fn get(&self, req: Request<Bytes>) -> ResponseFuture {
-		let el = right_path_element!(req);
-		let h = match self.parse_input(el.to_string()) {
-			Err(e @ Error::Argument(_)) => {
-				return response(
-					StatusCode::BAD_REQUEST,
-					format!("failed to parse input: {}", e),
-				);
-			}
-			Err(e) => return result_to_response::<()>(Err(e)),
-			Ok(h) => h,
-		};
-
-		let options = match parse_block_query(req.uri().query()) {
-			Ok(options) => options,
-			Err(e) => return result_to_response::<()>(Err(e)),
-		};
-
-		if options.compact {
-			return result_to_response(self.get_compact_block(&h, options.include_merkle_proof));
-		}
-
-		result_to_response(self.get_block(&h, options.include_proof, options.include_merkle_proof))
 	}
 }
 
@@ -599,15 +375,7 @@ mod tests {
 		};
 		assert_eq!(chain.get_header_by_height(3).unwrap(), c.header);
 		assert!(matches!(
-			headers.get_header("3".into()),
-			Err(Error::NotFound(_))
-		));
-		assert!(matches!(
 			headers.parse_inputs(Some(3), None, None),
-			Err(Error::NotFound(_))
-		));
-		assert!(matches!(
-			blocks.parse_input("3".into()),
 			Err(Error::NotFound(_))
 		));
 		assert!(matches!(
@@ -628,7 +396,7 @@ mod tests {
 			.is_empty());
 
 		// A higher-work header B' switches the header PMMR to A -> B'. The body
-		// head remains B. Both REST/RPC height selectors, ranges, and outputs must
+		// head remains B. RPC height selectors, ranges, and outputs must
 		// keep returning B and its unspent outputs, rather than the header-only fork.
 		let fork = make_block(&mut secp, &a.header, 10);
 		chain
@@ -641,11 +409,13 @@ mod tests {
 			fork.hash(0).unwrap()
 		);
 		assert_eq!(
-			headers.get_header("2".into()).unwrap().hash,
+			headers
+				.get_header_v2(&headers.parse_inputs(Some(2), None, None).unwrap())
+				.unwrap()
+				.hash,
 			b_hash.to_hex()
 		);
 		assert_eq!(headers.parse_inputs(Some(2), None, None).unwrap(), b_hash);
-		assert_eq!(blocks.parse_input("2".into()).unwrap(), b_hash);
 		assert_eq!(blocks.parse_inputs(Some(2), None, None).unwrap(), b_hash);
 		let listing = blocks.get_blocks(1, 10, 10, None).unwrap();
 		assert_eq!(listing.last_retrieved_height, 2);
@@ -670,7 +440,7 @@ mod tests {
 	}
 
 	#[test]
-	fn full_and_compact_blocks_build_output_metadata_from_snapshot() {
+	fn full_blocks_build_output_metadata_from_snapshot() {
 		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
 		mwc_core::global::set_local_nrd_enabled(false);
 		let chain_dir = unique_test_dir("block_response_snapshot");
@@ -681,8 +451,6 @@ mod tests {
 		let block_hash = genesis.hash(0).unwrap();
 		let output_root = genesis.header.output_root;
 		let output_mmr_size = genesis.header.output_mmr_size;
-		let source_compact =
-			mwc_core::core::CompactBlock::from(genesis.clone()).expect("compact genesis block");
 		let chain = Arc::new(
 			mwc_chain::Chain::init(
 				&secp,
@@ -722,33 +490,6 @@ mod tests {
 			.verify(0, output_root, &output.identifier(), pos0)
 			.unwrap();
 
-		let compact = handler.get_compact_block(&block_hash, true).unwrap();
-		let converted_compact =
-			CompactBlockPrintable::from_compact_block(&source_compact, &chain, true)
-				.expect("printable compact genesis block");
-		assert_eq!(converted_compact.nonce, source_compact.nonce);
-		let serialized_compact =
-			mwc_crates::serde_json::to_value(&converted_compact).expect("serialize compact block");
-		assert_eq!(
-			serialized_compact
-				.get("nonce")
-				.and_then(|nonce| nonce.as_u64()),
-			Some(source_compact.nonce)
-		);
-		let compact_output = compact
-			.out_full
-			.iter()
-			.find(|printable| printable.commit == output.commitment())
-			.expect("genesis output in printable compact block");
-		assert_eq!(compact_output.context_id, printable_output.context_id);
-		assert_eq!(
-			compact_output
-				.merkle_proof
-				.as_ref()
-				.map(|proof| proof.mmr_size),
-			Some(output_mmr_size)
-		);
-
 		drop(chain);
 		let _ = fs::remove_dir_all(&chain_dir);
 	}
@@ -767,105 +508,10 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_input_rejects_overlong_hashes() {
-		let handler = BlockHandler { chain: Weak::new() };
-		let overlong_hash = format!("{}00", "a".repeat(Hash::LEN * 2));
-		assert!(handler.parse_input(overlong_hash).is_err());
-	}
-
-	#[test]
-	fn parse_input_rejects_very_overlong_hashes_with_bounded_error() {
-		let handler = BlockHandler { chain: Weak::new() };
-		let overlong_hash = "a".repeat(INVALID_INPUT_PREVIEW_CHARS + 512);
-		let err = handler.parse_input(overlong_hash.clone()).unwrap_err();
-
-		match err {
-			Error::Argument(msg) => {
-				assert!(
-					msg.contains(&format!("len {}", overlong_hash.len())),
-					"{}",
-					msg
-				);
-				assert!(
-					msg.contains(&"a".repeat(INVALID_INPUT_PREVIEW_CHARS)),
-					"{}",
-					msg
-				);
-				assert!(msg.contains("truncated"), "{}", msg);
-				assert!(!msg.contains(&overlong_hash), "{}", msg);
-				assert!(msg.len() < 256, "{}", msg);
-			}
-			other => panic!("expected argument error, got {:?}", other),
-		}
-	}
-
-	#[test]
-	fn parse_input_rejects_noncanonical_numeric_heights_before_chain_lookup() {
-		let handler = BlockHandler { chain: Weak::new() };
-		let overlong_zero_height = "0".repeat(Hash::LEN * 2 + 3);
-
-		for input in ["00", "01", &overlong_zero_height] {
-			match handler.parse_input(input.to_owned()) {
-				Err(Error::Argument(_)) => {}
-				other => panic!("expected argument error for {:?}, got {:?}", input, other),
-			}
-		}
-	}
-
-	#[test]
-	fn parse_canonical_height_accepts_only_canonical_decimal_strings() {
-		assert_eq!(parse_canonical_height("0"), Some(0));
-		assert_eq!(parse_canonical_height("1"), Some(1));
-		assert_eq!(
-			parse_canonical_height(&u64::MAX.to_string()),
-			Some(u64::MAX)
-		);
-
-		assert_eq!(parse_canonical_height(""), None);
-		assert_eq!(parse_canonical_height("00"), None);
-		assert_eq!(parse_canonical_height("01"), None);
-		assert_eq!(parse_canonical_height("18446744073709551616"), None);
-		assert_eq!(parse_canonical_height(&"0".repeat(Hash::LEN * 2 + 3)), None);
-	}
-
-	#[test]
-	fn parse_block_query_accepts_supported_flags() {
-		let options = parse_block_query(Some("compact&no_merkle_proof&include_proof=1")).unwrap();
-
-		assert!(options.compact);
-		assert!(options.include_proof);
-		assert!(!options.include_merkle_proof);
-	}
-
-	#[test]
-	fn parse_block_query_rejects_percent_decoded_invalid_utf8() {
-		match parse_block_query(Some("compact=%FF")) {
-			Ok(_) => panic!("expected invalid UTF-8 to be rejected"),
-			Err(Error::RequestError(msg)) => {
-				assert!(msg.contains("invalid UTF-8 in query string"), "{}", msg);
-			}
-			Err(other) => panic!("expected request error, got {:?}", other),
-		}
-	}
-
-	#[test]
-	fn get_preserves_internal_parse_input_errors() {
-		let handler = BlockHandler { chain: Weak::new() };
-		let req = Request::builder()
-			.uri("/v1/blocks/1")
-			.body(Bytes::new())
-			.unwrap();
-
-		let response = mwc_crates::futures::executor::block_on(handler.get(req)).unwrap();
-
-		assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-	}
-
-	#[test]
-	fn get_header_propagates_internal_commitment_probe_errors() {
+	fn header_commitment_lookup_propagates_internal_errors() {
 		let handler = HeaderHandler { chain: Weak::new() };
 
-		match handler.get_header("a".repeat(Hash::LEN * 2 + 2)) {
+		match handler.parse_inputs(None, None, Some("a".repeat(Hash::LEN * 2 + 2))) {
 			Err(Error::Internal(msg)) => {
 				assert!(msg.contains("failed to upgrade weak reference"));
 			}
@@ -950,7 +596,7 @@ mod tests {
 	}
 
 	#[test]
-	fn get_header_for_output_returns_none_for_missing_output_probe() {
+	fn header_commitment_lookup_returns_not_found_for_missing_output() {
 		mwc_core::global::set_local_chain_type(mwc_core::global::ChainTypes::Floonet);
 		mwc_core::global::set_local_nrd_enabled(false);
 		let chain_dir = unique_test_dir("missing_output_header_probe");
@@ -977,13 +623,13 @@ mod tests {
 			let handler = HeaderHandler {
 				chain: Arc::downgrade(&chain),
 			};
-			handler.get_header_for_output(secp.commit_value(42).unwrap().to_hex())
+			handler.parse_inputs(None, None, Some(secp.commit_value(42).unwrap().to_hex()))
 		};
 
 		let _ = fs::remove_dir_all(&chain_dir);
 
 		match result {
-			Ok(None) => {}
+			Err(Error::NotFound(_)) => {}
 			other => panic!("expected missing output probe, got {:?}", other),
 		}
 	}

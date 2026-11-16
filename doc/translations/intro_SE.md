@@ -1,6 +1,6 @@
 # Introduktion till Mimblewimble och MWC
 
-*Läs detta på andra språk: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
+*Läs detta på andra språk: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [简体中文](intro_ZH-CN.md).*
 
 Mimblewimble är ett blockkedjeformat och protokoll som erbjuder extremt bra
 skalbarhet, integritet, och fungibilitet genom starka kryptografiska primitiver.

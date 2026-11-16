@@ -1,6 +1,6 @@
 # Introducción a Mimblewimble y MWC
 
-*Lea esto en otros idiomas: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [Korean](intro_KR.md), [简体中文](intro_ZH-CN.md).*
+*Lea esto en otros idiomas: [English](../intro.md), [Español](intro_ES.md), [Nederlands](intro_NL.md), [Русский](intro_RU.md), [日本語](intro_JP.md), [Deutsch](intro_DE.md), [Portuguese](intro_PT-BR.md), [简体中文](intro_ZH-CN.md).*
 
 Mimblewimble es un formato y un protocolo de cadena de bloques que proporciona una escalabilidad, privacidad y funcionalidad
 extremadamente buenas al basarse en fuertes algoritmos criptográficos. Aborda los vacíos existentes en casi todas las

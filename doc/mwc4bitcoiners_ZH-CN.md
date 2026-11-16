@@ -1,8 +1,6 @@
 
 # MWC/Mimblewimble 致比特币持有者
 
-* 阅读其他语言版本：[Korean](MWC4bitcoiners_KR.md)、 [English](MWC4bitcoiners.md)
-
 ## 隐私和可互换性
 
 MWC 链上交易有三个隐私特性：

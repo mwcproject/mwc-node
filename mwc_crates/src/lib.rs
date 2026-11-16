@@ -28,7 +28,9 @@ pub use croaring;
 pub use crossbeam;
 pub use crossbeam_utils;
 pub use ctrlc;
+#[cfg(feature = "tui")]
 pub use cursive;
+#[cfg(feature = "tui")]
 pub use cursive_table_view;
 pub use digest;
 pub use dirs;

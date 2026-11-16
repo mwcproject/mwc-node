@@ -11,7 +11,7 @@
 > root whose MMR size matches the `mmr_size` embedded in the proof, not
 > automatically with the output's originating block header.
 
-*Read this in other languages: [Korean](translations/coinbase_maturity_KR.md), [简体中文](translations/coinbase_maturity_ZH-CN).*
+*Read this in other languages: [Korean](translations/coinbase_maturity_KR.md), [简体中文](translations/coinbase_maturity_ZH-CN.md).*
 
 Coinbase outputs (block rewards & fees) are "locked" and require 1,440 confirmations (i.e 24 hours worth of blocks added to the chain) before they mature sufficiently to be spendable. This is to reduce the risk of later txs being reversed if a chain reorganization occurs.
 

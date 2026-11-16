@@ -1,38 +1,40 @@
-# Documentation structure
+# Node documentation
 
-*Read this in other languages: [Korean](translations/table_of_contents_KR.md), [简体中文](translations/table_of_contents_ZH-CN.md).*
+## Build, operate and integrate
 
-## Explaining mwc
+- [Build and run](build.md)
+- [Code and workspace structure](code_structure.md)
+- [HTTP APIs and authentication](api/api.md)
+- [Embedded node C ABI](mwc_lib_specification.md)
+- [Tor configuration](tor_inbound_feature.md)
+- [Chain synchronization and PIBD](chain/chain_sync.md)
+- [Exchange integration recommendations](exchange_recommendations.md)
+- [Offline wallet/node workflow](offline_wallet.md)
+- Mining setup: [Linux](mining/install_linux.md), [macOS](mining/Install_mac.md), [Windows](mining/install_windows.md)
+- [Stratum protocol](stratum.md) and [pool operations](stratum_for_pools.md)
 
-- [intro](intro.md) - Technical introduction to mwc
-- [mwc4bitcoiners](mwc4bitcoiners.md) - Explaining mwc from a bitcoiner's perspective
+## Protocol and implementation background
 
-## Understand the mwc implementation
+- [Introduction](intro.md)
+- [Blocks and headers](chain/blocks_and_headers.md)
+- [Validation logic](validation/validation_logic.md)
+- [Transaction pool](internal/pool.md) and [Dandelion](dandelion/dandelion.md)
+- [Merkle trees](merkle.md), [MMRs](mmr.md), [pruning](pruning.md), [state](state.md)
+- [Rangeproof format](rangeproof_byte_format.md)
+- [Coinbase maturity](coinbase_maturity.md) and [replay mitigation](replay_attack_mitigation.md)
+- [Peer protocol](p2p/p2p_protocol.md)
 
-- [chain_sync](chain/chain_sync.md) - About how Mwc's blockchain is synchronized
-- [blocks_and_headers](chain/blocks_and_headers.md) - How Mwc tracks blocks and headers on the chain
-- [contract_ideas](contract_ideas.md) - Ideas on how to implement contracts
-- [dandelion/dandelion](dandelion/dandelion.md) - About transaction propagation and cut-through. Stemming and fluffing!
-- [dandelion/simulation](dandelion/simulation.md) - Dandelion simulation - aggregating transaction without lock_height Stemming and fluffing!
-- [internal/pool](internal/pool.md) - Technical explanation of the transaction pool
-- [merkle](merkle.md) - Technical explanation of mwc's favorite kind of merkle trees
-- [merkle_proof graph](merkle_proof/merkle_proof.png) - Example merkle proof with pruning applied
-- [pruning](pruning.md) - Technical explanation of pruning
-- [stratum](stratum.md) - Technical explanation of Mwc Stratum RPC protocol
-- [transaction UML](https://github.com/mwcproject/mwc-node-wallet/blob/master/doc/transaction/basic-transaction-wf.png) - UML of an interactive transaction (aggregating transaction without `lock_height`)
-- [rangeproof output format](rangeproof_byte_format.md) - Explanation of the byte output of a range proof in a Mwc transaction
+Concept/design papers explain mechanisms, but may simplify consensus equations
+or describe proposals. Use the linked implementation and tests for exact rules.
 
-## Build and use
+## Historical and versioned material
 
-- [api](api/api.md) - Explaining the different APIs in Mwc and how to use them
-- [build](build.md) - Explaining how to build and run the Mwc binaries
-- [release](release_instruction.md) - Instructions of making a release
-- [usage](usage.md) - Explaining how to use mwc in Testnet3
-- [wallet](wallet/usage.md) - Explains the wallet design and `mwc wallet` sub-commands
+[Release notes](releases/release-7.2.0.md) describe their named version.
+[Roadmap](roadmap.md) is historical.
+Translations under `translations/` and adjacent `*_KR.md` files were written
+for older revisions and have not been brought up to date with these English
+build/API/library guides. In particular, old `mwc wallet`, external Tor and
+single-ZIP sync examples should not be used for this checkout.
 
-## External (wiki)
-
-- [FAQ](https://github.com/mimblewimble/docs/wiki/FAQ) - Frequently Asked Questions
-- [Building mwc](https://github.com/mimblewimble/docs/wiki/Building)
-- [How to use mwc](https://github.com/mimblewimble/docs/wiki/How-to-use-mwc)
-- [Hacking and contributing](https://github.com/mimblewimble/docs/wiki/Hacking-and-contributing)
+The wallet is maintained in [mwc-wallet](https://github.com/mwcproject/mwc-wallet)
+and the desktop UI in [mwc-qt-wallet](https://github.com/mwcproject/mwc-qt-wallet).

@@ -18,26 +18,8 @@ pub mod chain_api;
 pub mod peers_api;
 pub mod pool_api;
 pub mod server_api;
-pub mod transactions_api;
 pub mod utils;
-pub mod version_api;
 
-use self::blocks_api::BlockHandler;
-use self::blocks_api::HeaderHandler;
-use self::chain_api::ChainCompactHandler;
-use self::chain_api::ChainHandler;
-use self::chain_api::ChainValidationHandler;
-use self::chain_api::KernelHandler;
-use self::chain_api::OutputHandler;
-use self::peers_api::PeerHandler;
-use self::peers_api::PeersAllHandler;
-use self::peers_api::PeersConnectedHandler;
-use self::pool_api::PoolInfoHandler;
-use self::pool_api::PoolPushHandler;
-use self::server_api::IndexHandler;
-use self::server_api::StatusHandler;
-use self::transactions_api::TxHashSetHandler;
-use self::version_api::VersionHandler;
 use crate::auth::{
 	BasicAuthMiddleware, BasicAuthURIMiddleware, MWC_BASIC_REALM, MWC_FOREIGN_BASIC_REALM,
 };
@@ -48,7 +30,7 @@ use crate::owner::Owner;
 use crate::owner_rpc::OwnerRpc;
 use crate::rest::{ApiServer, Error, TLSConfig};
 use crate::router::ResponseFuture;
-use crate::router::{Router, RouterError};
+use crate::router::Router;
 use crate::stratum::Stratum;
 use crate::stratum_rpc::StratumRpc;
 use crate::web::*;
@@ -95,15 +77,7 @@ where
 	B: BlockChain + 'static,
 	P: PoolAdapter + 'static,
 {
-	// Adding legacy owner v1 API
-	let mut router = build_router(
-		chain.clone(),
-		tx_pool.clone(),
-		peers.clone(),
-		sync_state.clone(),
-		stop_state.clone(),
-	)
-	.map_err(|e| Error::Internal(format!("unable to build API router, {}", e)))?;
+	let mut router = Router::new();
 
 	let context_id = chain.get_context_id();
 	let basic_auth_key = if global::is_mainnet(context_id) {
@@ -114,7 +88,7 @@ where
 		"mwc"
 	};
 
-	// Add basic auth to v1 API and owner v2 API
+	// Add basic auth to owner and Stratum administration APIs
 	if let Some(api_secret) = api_secret {
 		let basic_auth_middleware = Arc::new(BasicAuthMiddleware::from_api_secret(
 			basic_auth_key,
@@ -484,120 +458,6 @@ fn response<T: Into<Bytes>>(status: StatusCode, text: T) -> Response<Full<Bytes>
 		Ok(r) => r,
 		Err(e) => response_build_error(e),
 	}
-}
-
-// Legacy V1 router
-/*#[deprecated(
-	since = "4.0.0",
-	note = "The V1 Node API will be removed in mwc 5.0.0. Please migrate to the V2 API as soon as possible."
-)]*/
-pub fn build_router<B, P>(
-	chain: Arc<Chain>,
-	tx_pool: Arc<RecursiveRwLock<mwc_pool::TransactionPool<B, P>>>,
-	peers: Arc<mwc_p2p::Peers>,
-	sync_state: Arc<SyncState>,
-	stop_state: Arc<StopState>,
-) -> Result<Router, RouterError>
-where
-	B: BlockChain + 'static,
-	P: PoolAdapter + 'static,
-{
-	let route_list = vec![
-		"get blocks".to_string(),
-		"get headers".to_string(),
-		"get chain".to_string(),
-		"post chain/compact".to_string(),
-		"get chain/validate?fast=true".to_string(),
-		"get chain/kernels/xxx?min_height=yyy&max_height=zzz".to_string(),
-		"get chain/outputs/byids?id=xxx,yyy,zzz".to_string(),
-		"get chain/outputs/byheight?start_height=101&end_height=200".to_string(),
-		"get status".to_string(),
-		"get txhashset/roots".to_string(),
-		"get txhashset/lastoutputs?n=10".to_string(),
-		"get txhashset/lastrangeproofs".to_string(),
-		"get txhashset/lastkernels".to_string(),
-		"get txhashset/outputs?start_index=1&max=100".to_string(),
-		"get txhashset/merkleproof?n=1".to_string(),
-		"get pool".to_string(),
-		"post pool/push_tx".to_string(),
-		"post peers/a.b.c.d:p/ban".to_string(),
-		"post peers/a.b.c.d:p/unban".to_string(),
-		"get peers/all".to_string(),
-		"get peers/connected".to_string(),
-		"get peers/a.b.c.d".to_string(),
-		"get version".to_string(),
-	];
-	let index_handler = IndexHandler { list: route_list };
-
-	let output_handler = OutputHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let kernel_handler = KernelHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let block_handler = BlockHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let header_handler = HeaderHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let chain_tip_handler = ChainHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let chain_compact_handler = ChainCompactHandler {
-		chain: Arc::downgrade(&chain),
-		sync_state: Arc::downgrade(&sync_state),
-		stop_state,
-	};
-	let chain_validation_handler = ChainValidationHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let status_handler = StatusHandler {
-		chain: Arc::downgrade(&chain),
-		peers: Arc::downgrade(&peers),
-		sync_state: Arc::downgrade(&sync_state),
-	};
-	let txhashset_handler = TxHashSetHandler {
-		chain: Arc::downgrade(&chain),
-	};
-	let pool_info_handler = PoolInfoHandler {
-		tx_pool: Arc::downgrade(&tx_pool),
-	};
-	let pool_push_handler = PoolPushHandler {
-		tx_pool: Arc::downgrade(&tx_pool),
-	};
-	let peers_all_handler = PeersAllHandler {
-		peers: Arc::downgrade(&peers),
-	};
-	let peers_connected_handler = PeersConnectedHandler {
-		peers: Arc::downgrade(&peers),
-	};
-	let peer_handler = PeerHandler {
-		peers: Arc::downgrade(&peers),
-	};
-	let version_handler = VersionHandler {
-		chain: Arc::downgrade(&chain),
-	};
-
-	let mut router = Router::new();
-
-	router.add_route("/v1/", Arc::new(index_handler))?;
-	router.add_route("/v1/blocks/*", Arc::new(block_handler))?;
-	router.add_route("/v1/headers/*", Arc::new(header_handler))?;
-	router.add_route("/v1/chain", Arc::new(chain_tip_handler))?;
-	router.add_route("/v1/chain/outputs/*", Arc::new(output_handler))?;
-	router.add_route("/v1/chain/kernels/*", Arc::new(kernel_handler))?;
-	router.add_route("/v1/chain/compact", Arc::new(chain_compact_handler))?;
-	router.add_route("/v1/chain/validate", Arc::new(chain_validation_handler))?;
-	router.add_route("/v1/txhashset/*", Arc::new(txhashset_handler))?;
-	router.add_route("/v1/status", Arc::new(status_handler))?;
-	router.add_route("/v1/pool", Arc::new(pool_info_handler))?;
-	router.add_route("/v1/pool/push_tx", Arc::new(pool_push_handler))?;
-	router.add_route("/v1/peers/all", Arc::new(peers_all_handler))?;
-	router.add_route("/v1/peers/connected", Arc::new(peers_connected_handler))?;
-	router.add_route("/v1/peers/**", Arc::new(peer_handler))?;
-	router.add_route("/v1/version", Arc::new(version_handler))?;
-	Ok(router)
 }
 
 #[cfg(test)]

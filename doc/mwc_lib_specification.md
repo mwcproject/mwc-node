@@ -7,35 +7,34 @@ This document specifies how to build and use `mwc_node_lib`, including its C int
 Run from repository root:
 
 ```bash
-cargo build --package mwc_node_lib --lib
+cargo build --release --locked --package mwc_node_lib --lib
 ```
 
 `mwc_node_lib` is built as `rlib`, `cdylib`, and `staticlib` (see `crate-type` in `mwc_node_lib/Cargo.toml`).
 
 ## C Interface
 
-The C interface is is defined in:
+The C interface is defined in:
 
 - [mwc_node_lib/c_header/mwc_node_interface.h](https://github.com/mwcproject/mwc-node/blob/master/mwc_node_lib/c_header/mwc_node_interface.h)
 
 Exported functions:
 
-- `char *process_mwc_node_request(char const *input);` - Main API entry point. 'input' is a json string with API 
-request call. Response is a C string that represent json format. Note, that string is managed in library side.
-Use this string as a read only, don't store it in you code. When you copy, release it by calling 'free_lib_string'  
+- `char *process_mwc_node_request(char const *input);` - Main API entry point. 'input' is a json string with API
+request call. Returns a separately allocated UTF-8 JSON C string. Treat it as read-only; it remains valid until `free_lib_string` is called exactly once. Copy/parse it before freeing it; do not use `free` or `delete`.
 
-- `void free_lib_string(char *s);` - Release rust managed memory. 
+- `void free_lib_string(char *s);` - Release rust managed memory.
 
-- `void register_lib_callback(char const *callback_name, int8_t const * (*cb)(void *, int8_t const *), void *ctx);` - 
-register callback function. 
+- `void register_lib_callback(char const *callback_name, int8_t const * (*cb)(void *, int8_t const *), void *ctx);` -
+register callback function.
   - 'callback_name' - name of this callback functions. This name will be used in other api calls.
-  - 'ctx' - pointer to context that will be passed to your callback. 
+  - 'ctx' - pointer to context that will be passed to your callback.
   - 'cb' - callback declared as:
 ```
   extern "C"
      // ctx - yout internal context that you passed to register_lib_callback
-     // msg - some message, usually it is a pointer to C strign in Json format. This memory is 
-     // managed on rust side and is valid during this callback only. Don't store or modify it. 
+     // msg - some message, usually it is a pointer to C strign in Json format. This memory is
+     // managed on rust side and is valid during this callback only. Don't store or modify it.
     const int8_t* new_tx_callback(void* ctx, const int8_t* msg) {
          ...
          return NULL;
@@ -44,7 +43,11 @@ register callback function.
 
 - `void unregister_lib_callback(char const *callback_name);` - unregister your callback by it's name. Logs an error and removes nothing if the callback name is invalid UTF-8 or is not registered.
 
-Important callback lifetime rule:
+Important callback lifetime rules:
+
+- Caller-owned callback context must be safe for the threads that invoke it and remain alive until `unregister_lib_callback` returns for that exact name. Unregister waits for in-flight callbacks; free the context afterward.
+- Callbacks must not synchronously register or unregister callbacks: dispatch holds the registry read lock. Use unique names; registering a duplicate does not replace the existing callback.
+- A response callback must not return a pointer to a destroyed local string. Keep its response storage valid until Rust copies it, including under concurrent callbacks.
 
 - Callback message pointers are temporary and must not be stored on the C side. Copy data during callback execution.
 - Notification callbacks may return null. Wallet node-client callbacks must synchronously return a valid JSON response C string; Rust copies it before returning from the callback call.
@@ -56,11 +59,11 @@ Important callback lifetime rule:
 ```json
 {
   "method": "create_context",
-  "params": {}
+  "params": { "chain_type": "Floonet" }
 }
 ```
 
-Success response:
+Success response (the result depends on the method; `create_context` returns `context_id`):
 
 ```json
 {
@@ -154,8 +157,8 @@ All methods below are dispatched in:
 - Result:
   - `{}`
 - Notes:
-  - Starts Arti Tor runtime. We recommend you start Tor core as soon as possible. 
-  Node need Tor for p2p connecitons. 
+  - Starts Arti Tor runtime. We recommend you start Tor core as soon as possible.
+  Node need Tor for p2p connecitons.
 
 ### 8) `shutdown_tor`
 
@@ -174,7 +177,7 @@ All methods below are dispatched in:
   - none
 - Result:
   - `{ "started": <bool>, "healthy": <bool> }`
-- Notes: 
+- Notes:
   - Use Tor 'healthy' result for monitoring and notifications. Node library will restore connection to the tor if possible.
   - Use tor 'started' result to track if start_tor task not failed. If might fail if it will not be able initiate connect to
   Tor network during few minutes.
@@ -183,11 +186,12 @@ All methods below are dispatched in:
 
 - Params:
   - `context_id` (required): `u32`
-  - `db_root` (required): `string` - path where the blockchin data will be stored.
-  - `onion_expanded_key` (optional): `string` - Use onion expanded key to define specific Onion address. 
+  - `db_root` (required): `string` - path where blockchain data will be stored.
+  - `skip_start_blockchain_validation` (required): `bool` - whether to skip comprehensive startup chain validation. Use `false` for normal validation.
+  - `onion_expanded_key` (optional): `string` - Use onion expanded key to define specific Onion address.
   This option make sense for seed nodes, so onion address will be constant. By default rando address will
   be generated on the first run.
-  - `hook_callback_name` (optional): `string` (registered callback name) - Callback to receive events from the node. 
+  - `hook_callback_name` (optional): `string` (registered callback name) - Callback to receive events from the node.
 - Result:
   - `{}`
 - Notes:
@@ -220,7 +224,7 @@ All methods below are dispatched in:
 - Result:
   - `{}`
 - Notes:
-  - Starting foreign API. Note, that API will not listen on the web, requests are expected to come through 'process_api_call'  
+  - Starting foreign API. Note, that API will not listen on the web, requests are expected to come through 'process_api_call'
 
 ### 13) `process_api_call`
 
@@ -232,8 +236,9 @@ All methods below are dispatched in:
 - Result:
   - `{ "response": "<response_body_as_string>" }`
 - Notes:
-  - 'body' and 'response' details check of mwc-node foreign API documentation. 
-  - mwc-node using rust json convention that is different from JS or C++ Qt. Long values must be converted and keep all bits, not 7 bytes. 
+  - 'body' and 'response' details check of mwc-node foreign API documentation.
+  - Preserve full-width integer values in JSON. JavaScript numbers cannot represent every `u64` exactly; use the field serialization defined by the API rather than converting through a floating-point number.
+  - Inspect the inner JSON-RPC response as well as the outer success envelope. A non-success HTTP status is returned as an outer error.
 
 ### 14) `start_stratum`
 

@@ -29,7 +29,7 @@ name = "mwc"
 path = "src/bin/mwc.rs"
 
 [dependencies]
-mwc_crates = { path = "./mwc_crates", version = "7.2.0" }
+mwc_crates = { path = "./mwc_crates", version = "7.2.0", features = ["tui"] }
 mwc_api = { path = "./api", version = "7.2.0" }
 mwc_config = { path = "./config", version = "7.2.0" }
 mwc_chain = { path = "./chain", version = "7.2.0" }

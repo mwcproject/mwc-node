@@ -354,7 +354,7 @@ impl PeerStore {
 	}
 
 	/// List all known peers
-	/// Used for /v1/peers/all api endpoint
+	/// Used by the node peer-list API
 	pub fn all_peers(&self) -> Result<Vec<PeerData>, Error> {
 		self.peers_iter()?.collect()
 	}
