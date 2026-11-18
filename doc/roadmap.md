@@ -1,19 +1,61 @@
-> Historical roadmap and distribution record. Dates under “To be done” are past plans, not current commitments. The library model now exists (`node_workflow` and `mwc_node_lib`); consult [code_structure.md](code_structure.md) for implemented components.
-
 The MWC network was launched in November 2019.
-MWC development is progressing well and there are many areas where development resources could be allocated.
 
-This roadmap will show you where MWC has been and plans to go. If you are a skilled developer then please jump in and help make it happen!
+This roadmap shows where MWC has been and where it plans to go. If you are a skilled developer then please jump in and help make it happen!
+
+# Roadmap
+Listed in order of priority. If you want to help please contact us in discord.
+
+1. Additional exchange integrations.
+2. Ongoing AI code audits of mwc-node, mwc-wallet and their dependencies.
+3. Desktop wallet: mwc-qt-wallet feature upgrades built on its embedded architecture (mwc-node, mwc-wallet and Tor running in a single multi-threaded process).
+4. Mining: Stratum protocol upgrades for miners and mining pools.
+5. Mobile: continued enhancements to the full archival node running on mobile, along with mobile wallet updates.
+
+There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
+
+# Scheduled
+- 12/01/2026 - Coinbase input binding activates at mainnet block 3,680,000 (mwc-node 7.2.0). Miners need a wallet that supports `binding_digest` and `coinbase_opening`.
 
 # Completed
-- 03/31/2022 - NIT scheme security
+
+## 2026
+- 11/14/2026 - mwc-node 7.2.0: coinbase input binding to prevent input substitution; header, block and PIBD sync verify that peer data advances the chain and ban dishonest peers; `testmempoolaccept` RPC; custom Tor bridges, transports and proxies.
+- 11/14/2026 - mwc-wallet 7.0.0 passed a code audit.
+- 08/25/2026 - mwc-node 7.1.0: critical performance fixes and additional audit findings addressed.
+- 07/31/2026 - mwc-node 7.0.0 passed a code audit (secp256k1-zkp hardening, checked math and conversions). Sync uses all CPU cores, data directory restricted to owner-only permissions, Tor enabled by default.
+- 03/15/2026 - mwc-node and mwc-wallet 6.0.1: embedded Tor client (Arti) enabled by default; node and wallet can be built as libraries with a C interface, including multiple instances in parallel.
+- 03/15/2026 - QT wallet 2.0.1: multi-threaded architecture with embedded node, wallet and Tor; uses a public node while the embedded node syncs; self-contained Linux installer for cold wallet setups.
+
+## 2025
+- 09/13/2025 - QT wallet 1.2.15: simplified Slatepack-first UI, cold wallet workflow fixes.
+- 09/09/2025 - mwc-wallet 5.3.9: transaction sessions to prevent transaction data leaks, improved slate and transaction proof validation.
+- 08/28/2025 - mwc-node 5.3.10: offline mode for cold wallet setups, transaction fee limits.
+- 07/19/2025 - Base transaction fee lowered to 0.000001 MWC (no hard fork required).
+- 07/11/2025 - mwc-metal-miner 1.0.0, a GPU miner for Apple Silicon.
+- 07/06/2025 - Floonet faucet for developers (mwc-wallet 5.3.7).
+- 04/15/2025 - Wallet optimizations for high transaction volume (mining pools and exchanges): partitioned storage, faster transaction building, late-lock fee fixes.
+- 01/26/2025 - Node stability and scalability improvements; Apple Silicon binaries.
+- 01/06/2025 - mwc-node 5.3.6 fast sync: parallel header download (PIBD), improved peer discovery.
+- 2025 - Mobile node, as part of MWC Locker.
+
+## 2024
+- 10/04/2024 - Viewing key and ownership proofs (mwc-wallet 5.3.3, QT wallet 1.2.9). QT wallet supports 12, 15, 18, 21 and 24 word passphrases and Tor bridges.
+- 09/05/2024 - mwc-wallet 5.3.1: Tor obfs4 and Snowflake bridges, Slatepack QR codes, "reverted" transaction status, send max.
+- 08/16/2024 - Rebase to Grin 5.3 (mwc-node 5.3.2) with PIBD fast sync.
+
+## 2022
+- 03/31/2022 - NIT scheme security.
+
+## 2021
 - 12/29/2021 - Atomic swaps for ETH and ERC-20 tokens.
-- 30/05/2021 Mobile wallet, Android v1.
-- 20/05/2021 Decentralized exchange.
-- 20/03/2021 Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
-- 20/03/2021 Reply attack implementation (The feature will be activated with NIT).
-- 30/12/2020 Mwc rebase.
-- 12/16/2020 MWC/BTC & MWC/BCH atomic swaps.
+- 05/30/2021 - Mobile wallet, Android v1.
+- 05/20/2021 - Decentralized exchange.
+- 03/20/2021 - Atomic swaps for more coins (LTC, ZCash, Dash, Doge).
+- 03/20/2021 - Replay attack implementation (The feature will be activated with NIT).
+
+## 2020
+- 12/30/2020 - Mwc rebase.
+- 12/16/2020 - MWC/BTC & MWC/BCH atomic swaps.
 - 10/26/2020 - All funds completely distributed to the MWC hodlers.
 - MWCMQS support in mwc-wallet.
 - TOR support in all wallets and nodes.
@@ -23,25 +65,11 @@ This roadmap will show you where MWC has been and plans to go. If you are a skil
 - 04/07/2020 - HODL Program registration (QT 1.0.15).
 - 01/22/2020 - Mwc 3.0 rebase (mwc-node 3.0.0).
 - 01/21/2020 - MWC CVE patched.
+
+## 2019
 - 12/21/2019 - MWC QT wallet cold storage implementation (QT 1.0.11).
 - 11/11/2019 - Mainnet launch.
 - 10/14/2019 - BTC/MWC atomic swap completed on testnet.
-
-
-
-# To be done
-If you want to help please contact us in discord.
--
-- Extend Mobile wallet with additional functionality. 
-- Non-interactive transaction scheme (NIT). Q4-2022
-- trustless aggregators system for transactions obfuscation
-- Mobile node.
-- Switch from binaries to library model (required for iOS support).  
-- Multisig.
-- Minimize transactions traceability (Coinjoin pool)
-- Hardware wallets. Requires hardware manufacturer support.
-
-There are many potential places development resources can be allocated. They will be chosen based on market needs. Highest priority will be given to requests that primarily benefit and come from the buyers and hodlers of last resort.
 
 # Initial stock distribution
 
@@ -75,6 +103,6 @@ Claim 5 to MWC hodlers (Unclaimed from claim 4)	| 500,000 |	10/26/20 | 32,734.00
 | MWC  | 886,947,008| Year 3707        | 0                | -              | 20,000,000          | -              | -                   |
 
 
-**Developement is solely financed by donations.**
+**Development is solely financed by donations.**
 					
 					
