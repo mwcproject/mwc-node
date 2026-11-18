@@ -20,9 +20,9 @@ There are many potential places development resources can be allocated. They wil
 
 ## 2026
 - 11/14/2026 - mwc-node 7.2.0: coinbase input binding to prevent input substitution; header, block and PIBD sync verify that peer data advances the chain and ban dishonest peers; `testmempoolaccept` RPC; custom Tor bridges, transports and proxies.
-- 11/14/2026 - mwc-wallet 7.0.0 passed a code audit.
+- 11/14/2026 - mwc-wallet 7.0.0: a comprehensive AI-driven security review of the wallet, documented in [39 pages of release notes](https://github.com/mwcproject/mwc-wallet/blob/master/doc/releases/release-7.0.0.md). Stricter validation of slates, payment proofs and participant signatures; every transaction is checked locally and preflighted against the node before it is published; secrets zeroized in memory and wallet files written with owner-only permissions.
 - 08/25/2026 - mwc-node 7.1.0: critical performance fixes and additional audit findings addressed.
-- 07/31/2026 - mwc-node 7.0.0 passed a code audit (secp256k1-zkp hardening, checked math and conversions). Sync uses all CPU cores, data directory restricted to owner-only permissions, Tor enabled by default.
+- 07/31/2026 - mwc-node 7.0.0: significant hardening of the node from an extensive AI audit, with [92 pages of release notes](https://github.com/mwcproject/mwc-node/blob/master/doc/releases/release-7.0.0.md) (secp256k1-zkp hardening, checked math and conversions). Sync uses all CPU cores, data directory restricted to owner-only permissions, Tor enabled by default.
 - 03/15/2026 - mwc-node and mwc-wallet 6.0.1: embedded Tor client (Arti) enabled by default; node and wallet can be built as libraries with a C interface, including multiple instances in parallel.
 - 03/15/2026 - QT wallet 2.0.1: multi-threaded architecture with embedded node, wallet and Tor; uses a public node while the embedded node syncs; self-contained Linux installer for cold wallet setups.
 
