@@ -921,6 +921,7 @@ impl Chain {
 			VariableSizeMetadataValidation::Full,
 		)?;
 
+		migrate_legacy_body_tail(&store, stop_state.as_deref())?;
 		mark_interrupted_pibd_for_recovery(&genesis, &store, &txhashset)?;
 
 		// A full body reset rebuilds its indexes from genesis. Run it before
@@ -4281,7 +4282,7 @@ impl Chain {
 		// `last_block_h` is the authoritative body HEAD selector; use its selected
 		// header rather than the redundant persisted Tip height. The same helper
 		// supplies the canonical body window to both rebuild and migration.
-		let (header, canonical_head, window_start, canonical_headers) =
+		let (header, canonical_head, window_start, mut canonical_headers) =
 			Self::canonical_body_headers_in_horizon(
 				store.get_context_id(),
 				&head,
@@ -4289,13 +4290,19 @@ impl Chain {
 				"spent occurrence index HEAD",
 			)?;
 		if canonical_head.height != 0 {
+			// PIBD only retains full bodies from BODY_TAIL onward.
+			match batch.tail() {
+				Ok(tail) => canonical_headers.retain(|header| header.height >= tail.height),
+				Err(NotFoundErr(_)) => {}
+				Err(e) => return Err(Error::StoreErr(e, "spent index BODY_TAIL".into())),
+			}
 			// An incomplete index left by a crash or an older version is rebuilt
-			// from canonical body blocks strictly above the horizon boundary. Every
+			// from retained canonical body blocks above the horizon boundary. Every
 			// consumer is bounded by one cut-through horizon from the head: the replay
 			// check ignores spends below half the horizon, rewinds beyond one horizon
 			// are rejected with RewindBeyondHorizon, and compaction authenticates only
 			// blocks in the compact window. Walking body HEAD ancestry avoids archive
-			// history and retained bodies on competing forks.
+			// history, pre-PIBD bodies, and retained bodies on competing forks.
 			info!(
 				"Rebuilding spent occurrence index from canonical body blocks at HEAD {} height {} (window start {})",
 				canonical_head.last_block_h, canonical_head.height, window_start
@@ -5353,6 +5360,84 @@ impl Chain {
 	pub fn get_context_id(&self) -> u32 {
 		self.store.get_context_id()
 	}
+}
+
+const LEGACY_BODY_TAIL_MIGRATED: &str = "legacy_body_tail_migrated";
+
+/// V6 PIBD used the snapshot header as BODY_TAIL without storing its body.
+/// Move that boundary to its canonical successor once, or clear it when no
+/// successor exists so the existing PIBD restart path handles the snapshot.
+/// The following startup phases validate retained bodies and chain state.
+fn migrate_legacy_body_tail(
+	store: &ChainStore,
+	stop_state: Option<&StopState>,
+) -> Result<(), Error> {
+	let batch = store.batch_write()?;
+	if batch.get_bool_flag(LEGACY_BODY_TAIL_MIGRATED)?
+		|| batch.output_pos_index_complete()?.is_some()
+		|| batch
+			.get_chain_marker::<PendingChainOperation>(store::ChainMarker::LastChainOperation)?
+			.is_some()
+	{
+		return Ok(());
+	}
+	let head = match batch.head() {
+		Ok(head) => canonical_tip_header("legacy body tail HEAD", &head, &batch)?.0,
+		Err(NotFoundErr(_)) => return Ok(()),
+		Err(e) => return Err(Error::StoreErr(e, "legacy body tail HEAD".into())),
+	};
+	if head.height == 0 {
+		return Ok(());
+	}
+	if stop_state.is_some_and(StopState::is_stopped) {
+		return Err(Error::Stopped);
+	}
+	let (_, tail) = canonical_tip_header("legacy body tail BODY_TAIL", &batch.tail()?, &batch)?;
+	let context_id = store.get_context_id();
+	// Only the legacy snapshot boundary is eligible; ordinary missing bodies
+	// remain errors in the subsequent validation.
+	if tail.height > 0
+		&& tail.height % global::txhashset_archive_interval(context_id) == 0
+		&& !batch.block_exists(&tail.last_block_h)?
+	{
+		if head.hash(context_id)? == tail.last_block_h {
+			// Current PIBD leaves BODY_TAIL absent until the first full block.
+			// Normalize to that state; mark_interrupted_pibd_for_recovery handles it.
+			info!(
+				"Clearing legacy PIBD BODY_TAIL at height {}: no full block follows the snapshot",
+				tail.height
+			);
+			batch.delete_body_tail()?;
+		} else {
+			let next_height = tail
+				.height
+				.checked_add(1)
+				.ok_or_else(|| Error::DataOverflow("legacy BODY_TAIL successor height".into()))?;
+			let next = body_chain_ancestor_at_height(
+				context_id,
+				&batch,
+				&head,
+				next_height,
+				"legacy body tail successor",
+			)?;
+			if next.prev_hash != tail.last_block_h {
+				return Err(Error::InvalidPersistedChainState(
+					"legacy BODY_TAIL is not on the canonical body ancestry".into(),
+				));
+			}
+			info!(
+				"Migrating legacy PIBD BODY_TAIL from snapshot height {} to first retained height {}",
+				tail.height, next.height
+			);
+			batch.save_body_tail(&Tip::try_from_header(&next)?)?;
+		}
+	}
+	if stop_state.is_some_and(StopState::is_stopped) {
+		return Err(Error::Stopped);
+	}
+	batch.set_bool_flag(LEGACY_BODY_TAIL_MIGRATED, true)?;
+	batch.commit()?;
+	Ok(())
 }
 
 /// Restart PIBD if its import was interrupted or no subsequent full block was
@@ -6892,6 +6977,12 @@ fn setup_head(
 				let body_pmmr_rewind_expected = output_mmr_size_before > header.output_mmr_size
 					|| kernel_mmr_size_before > header.kernel_mmr_size;
 
+				// Rebuild legacy output indexes before the existing startup check
+				// requires their completeness marker.
+				if !body_pmmr_rewind_expected && batch.output_pos_index_complete()?.is_none() {
+					txhashset.init_output_pos_index(&batch, None, stop_state.clone())?;
+				}
+
 				let res = txhashset::extending(header_pmmr, txhashset, &mut batch, |ext, batch| {
 					pipe::rewind_and_apply_fork(store.get_context_id(), &header, ext, batch, secp)?;
 
@@ -6906,7 +6997,7 @@ fn setup_head(
 
 					let extension = &mut ext.extension;
 					// Authenticate persisted PMMR data against its hash trees and the
-					// selected header before trusting or rebuilding any derived cache.
+					// selected header.
 					// Fast validation still verifies the MMRs, roots, sizes, leaf-set
 					// pairing, and kernel sums; it skips only rangeproof and kernel
 					// signature verification.
@@ -6920,9 +7011,9 @@ fn setup_head(
 					)?;
 					// PMMR roots authenticate append history, but not the exact
 					// membership of the prunable output/rangeproof leaf sets. For a
-					// zero-step startup rewind, bind those leaf sets to the independently
-					// committed output_pos index before accepting the durable HEAD or
-					// rebuilding derived caches.
+					// zero-step startup rewind, bind those leaf sets to output_pos.
+					// Legacy indexes were rebuilt above; modern indexes retain their
+					// independently committed contents.
 					//
 					// If the backend is actually being rewound, output_pos still describes
 					// the pre-rewind state and is not a valid authentication anchor. The
@@ -13105,6 +13196,95 @@ mod tests {
 		SpentCommitmentRecord {
 			spending_block: HashHeight { hash, height },
 			spent_output: CommitPos { pos: 1, height: 0 },
+		}
+	}
+
+	#[test]
+	fn upgrade_v6_indexes_and_pibd_tail_survive_restart() {
+		for snapshot in [false, true] {
+			let dir = mwc_crates::tempfile::tempdir().unwrap();
+			let path = dir.path().to_str().unwrap();
+			let chain = mine_chain(path, 13);
+			let genesis = chain.genesis.clone();
+			let head = chain.head().unwrap();
+			let header_head = chain.header_head().unwrap();
+			let tail_height = if snapshot { 10 } else { 0 };
+			let tail = chain.get_header_by_height(tail_height).unwrap();
+			let commitment =
+				chain.store.get_block(&head.last_block_h).unwrap().outputs()[0].commitment();
+			let original_pos;
+			{
+				let batch = chain.store.batch_write().unwrap();
+				batch
+					.save_body_tail(&Tip::try_from_header(&tail).unwrap())
+					.unwrap();
+				for flag in [
+					LEGACY_BODY_TAIL_MIGRATED,
+					"output_pos_index_complete",
+					"kernel_pos_index_complete",
+					"spent_index_migrated",
+					"spent_commitment_record_index_complete",
+				] {
+					batch.set_bool_flag(flag, false).unwrap();
+					batch.delete_bool_flag(flag).unwrap();
+				}
+				if snapshot {
+					// V6 PIBD imported state at height 10, then downloaded 11 and 12.
+					// Keep the independently stored headers, but no old full bodies.
+					let mut header = tail.clone();
+					while header.height > 0 {
+						batch.delete_block(&header.hash(0).unwrap()).unwrap();
+						header = batch.get_block_header(&header.prev_hash).unwrap();
+					}
+				}
+				original_pos = batch.get_output_pos_height(&commitment).unwrap().unwrap();
+				// Membership still matches, but rebuilding must refresh creation
+				// heights rather than merely create the missing boolean marker.
+				batch
+					.save_output_pos_height(
+						&commitment,
+						CommitPos {
+							height: original_pos.height + 100,
+							..original_pos
+						},
+					)
+					.unwrap();
+				batch.commit().unwrap();
+			}
+			drop(chain);
+			let secp = Secp256k1::with_caps(ContextFlag::Commit).unwrap();
+			for _ in 0..2 {
+				let restarted = Chain::init(
+					&secp,
+					0,
+					path.to_owned(),
+					Arc::new(crate::types::NoopAdapter {}),
+					genesis.clone(),
+					pow::verify_size,
+					!snapshot,
+					HashSet::new(),
+					None,
+					None,
+					false,
+				)
+				.unwrap();
+				assert_eq!(restarted.head().unwrap(), head);
+				assert_eq!(restarted.header_head().unwrap(), header_head);
+				assert_eq!(
+					restarted.tail().unwrap().height,
+					if snapshot { 11 } else { 0 }
+				);
+				let batch = restarted.store.batch_read().unwrap();
+				assert_eq!(
+					batch.get_output_pos_height(&commitment).unwrap(),
+					Some(original_pos)
+				);
+				assert!(batch.is_output_pos_index_complete().unwrap());
+				assert!(batch.is_kernel_pos_index_complete().unwrap());
+				assert!(batch.is_spent_index_migrated().unwrap());
+				assert!(batch.is_spent_commitment_record_index_complete().unwrap());
+				assert!(batch.get_bool_flag(LEGACY_BODY_TAIL_MIGRATED).unwrap());
+			}
 		}
 	}
 
