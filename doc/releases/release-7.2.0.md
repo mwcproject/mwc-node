@@ -10,6 +10,7 @@
 
 ## Fixed issues
 
+- Fix startup migration from v6 databases: normalize legacy PIBD body tails, rebuild spent indexes only from retained blocks, and rebuild output indexes whose completeness marker is absent. Normal startup validation remains enabled, and startup errors are also written to the log.
 - Use compact block announcements on both mining and non-mining nodes to improve network efficiency and miner privacy.
 - Avoid repeated full-chain validation during startup and synchronization.
 - Preserve sync progress across reorgs and reconnects; correctly track obsolete requests and delayed responses.

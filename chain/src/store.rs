@@ -629,6 +629,15 @@ impl<'a> Batch<'a> {
 		self.get_bool_flag(OUTPUT_POS_INDEX_COMPLETE)
 	}
 
+	/// Preserve the distinction between a legacy database without this marker
+	/// and an index explicitly invalidated by recovery or an interrupted rebuild.
+	pub(crate) fn output_pos_index_complete(&self) -> Result<Option<bool>, Error> {
+		let value: Option<BoolFlag> = self
+			.db
+			.get_ser(&to_key(BOOL_FLAG_PREFIX, OUTPUT_POS_INDEX_COMPLETE))?;
+		Ok(value.map(Into::into))
+	}
+
 	/// Set DB flag representing a complete output_pos index.
 	pub fn set_output_pos_index_complete(&self, complete: bool) -> Result<(), Error> {
 		self.set_bool_flag(OUTPUT_POS_INDEX_COMPLETE, complete)

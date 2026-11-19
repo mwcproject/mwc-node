@@ -253,7 +253,9 @@ fn res_to_ret_val(res: Result<(), crate::cmd::Error>) -> i32 {
 	match res {
 		Ok(_) => 0,
 		Err(e) => {
-			println!("{}", escape_to_printable_ascii(&e.to_string()));
+			let message = escape_to_printable_ascii(&e.to_string());
+			error!("{}", message);
+			println!("{}", message);
 			1
 		}
 	}
